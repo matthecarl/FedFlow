@@ -10,6 +10,10 @@ import { useEffect } from "react"
  */
 export function FullStoryScript() {
     useEffect(() => {
+        const isRumConfigured = Boolean(
+            process.env.NEXT_PUBLIC_ELASTIC_APM_SERVER_URL && process.env.NEXT_PUBLIC_ELASTIC_APM_SERVICE_NAME,
+        )
+
         // Initialize FullStory
         window._fs_host = window._fs_host || "fullstory.com"
         const _fs_script = "https://edge.fullstory.com/s/fs.js"
@@ -22,7 +26,13 @@ export function FullStoryScript() {
 
         // Connect FullStory with Elastic APM
         try {
+            if (!isRumConfigured) {
+                return
+            }
+
             // Wait for both FullStory and APM to be ready
+            let attemptCount = 0
+            const maxAttempts = 20
             const waitForInit = () => {
                 if (window.FS && window.elasticApm) {
                     // Add FullStory session URL to all APM transactions
@@ -76,6 +86,12 @@ export function FullStoryScript() {
 
                     console.log("Successfully connected FullStory and Elastic APM")
                 } else {
+                    if (attemptCount >= maxAttempts) {
+                        console.warn("FullStory/APM integration skipped: APM agent not available")
+                        return
+                    }
+
+                    attemptCount += 1
                     // Try again in 500ms
                     setTimeout(waitForInit, 500)
                 }

@@ -19,25 +19,37 @@ export default function RootLayout({
 }: Readonly<{
     children: React.ReactNode
 }>) {
+    const rumServerUrl = process.env.NEXT_PUBLIC_ELASTIC_APM_SERVER_URL
+    const rumServiceName = process.env.NEXT_PUBLIC_ELASTIC_APM_SERVICE_NAME
+    const rumEnvironment = process.env.NEXT_PUBLIC_ELASTIC_APM_ENVIRONMENT || process.env.NODE_ENV || "development"
+    const rumServiceVersion = process.env.NEXT_PUBLIC_ELASTIC_APM_SERVICE_VERSION || process.env.APP_VERSION || "0.13.3"
+    const shouldInitRum = Boolean(rumServerUrl && rumServiceName)
+
+    const rumInitConfig = shouldInitRum
+        ? JSON.stringify({
+              serviceName: rumServiceName,
+              serverUrl: rumServerUrl,
+              environment: rumEnvironment,
+              breakdownMetrics: true,
+              serviceVersion: rumServiceVersion,
+          })
+        : ""
+
     return (
         <html lang="en">
             <head>
-                <Script
-                    src="https://unpkg.com/@elastic/apm-rum/dist/bundles/elastic-apm-rum.umd.min.js"
-                    strategy="beforeInteractive"
-                    crossOrigin="anonymous"
-                />
-                <Script id="elastic-apm-init" strategy="beforeInteractive">
-                    {`
-            elasticApm.init({
-              serviceName: 'realtime-frontend',
-              serverUrl: 'https://abbe56903b824f85b28892772f898006.apm.us-east-1.aws.cloud.es.io:443',
-              environment: '${process.env.NODE_ENV || "development"}',
-              breakdownMetrics: true,  
-              serviceVersion: "${process.env.APP_VERSION || "0.13.3"}",
-            });
-          `}
-                </Script>
+                {shouldInitRum ? (
+                    <>
+                        <Script
+                            src="https://unpkg.com/@elastic/apm-rum/dist/bundles/elastic-apm-rum.umd.min.js"
+                            strategy="beforeInteractive"
+                            crossOrigin="anonymous"
+                        />
+                        <Script id="elastic-apm-init" strategy="beforeInteractive">
+                            {`window.elasticApm && window.elasticApm.init(${rumInitConfig});`}
+                        </Script>
+                    </>
+                ) : null}
                 <FullStoryScript />
             </head>
             <body className={`antialiased`}>{children}</body>

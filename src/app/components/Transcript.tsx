@@ -70,7 +70,7 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
                 </button>
                 <div ref={transcriptRef} className="overflow-auto p-4 flex flex-col gap-y-4 h-full">
                     {transcriptItems.map((item) => {
-                        const { itemId, type, role, data, expanded, timestamp, title = "", isHidden } = item
+                        const { itemId, type, role, data, expanded, timestamp, title = "", isHidden, sourceBackend } = item
 
                         if (isHidden) {
                             return null
@@ -91,7 +91,10 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
                                         <div
                                             className={`text-xs ${isUser ? "text-gray-400" : "text-gray-500"} font-mono`}
                                         >
-                                            {timestamp}
+                                            {timestamp}{" "}
+                                            {sourceBackend && (
+                                                <span className="ml-1 uppercase tracking-wide">[{sourceBackend}]</span>
+                                            )}
                                         </div>
                                         <div className={`whitespace-pre-wrap ${messageStyle}`}>
                                             <ReactMarkdown
@@ -116,7 +119,12 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
                                     key={itemId}
                                     className="flex flex-col justify-start items-start text-gray-500 text-sm"
                                 >
-                                    <span className="text-xs font-mono">{timestamp}</span>
+                                    <span className="text-xs font-mono">
+                                        {timestamp}{" "}
+                                        {sourceBackend && (
+                                            <span className="ml-1 uppercase tracking-wide">[{sourceBackend}]</span>
+                                        )}
+                                    </span>
                                     <div
                                         className={`whitespace-pre-wrap flex items-center font-mono text-sm text-gray-800 ${
                                             data ? "cursor-pointer" : ""

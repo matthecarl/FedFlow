@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { trace, SpanKind, SpanStatusCode } from "@opentelemetry/api"
+import { context, trace, SpanKind, SpanStatusCode } from "@opentelemetry/api"
 // Define the attributes locally to avoid import issues
 const ATTR_GEN_AI_OPERATION_NAME = "gen_ai.operation.name"
 const ATTR_GEN_AI_SYSTEM = "gen_ai.system"
@@ -22,16 +22,18 @@ export async function GET() {
     })
 
     try {
-        const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                model: "gpt-4o-mini-realtime-preview",
-                // voice: "verse",
-            }),
+        const response = await context.with(trace.setSpan(context.active(), span), async () => {
+            return fetch("https://api.openai.com/v1/realtime/sessions", {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    model: "gpt-4o-mini-realtime-preview",
+                    // voice: "verse",
+                }),
+            })
         })
 
         // Add response code to span
@@ -51,8 +53,6 @@ export async function GET() {
             span.setAttribute("genai.session.token_available", true)
         }
 
-        span.end()
-
         return NextResponse.json(data)
     } catch (error) {
         console.error("Error in /session:", error)
@@ -67,8 +67,8 @@ export async function GET() {
             span.recordException(error)
         }
 
-        span.end()
-
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })
+    } finally {
+        span.end()
     }
 }

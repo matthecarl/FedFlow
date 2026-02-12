@@ -1,6 +1,6 @@
 "use client"
 
-import React, { Suspense } from "react"
+import React, { Suspense, useEffect, useState } from "react"
 import { ErrorBoundary } from "react-error-boundary"
 
 // Components
@@ -12,6 +12,7 @@ import BottomToolbar from "./components/BottomToolbar"
 import { useAgentSelection } from "./hooks/useAgentSelection"
 import { useRealtimeConnection } from "./hooks/useRealtimeConnection"
 import { useEventsPaneState } from "./hooks/useEventsPaneState"
+import { ConversationMode } from "./types"
 
 // Loading component for Suspense
 function Loading() {
@@ -31,6 +32,19 @@ function ErrorFallback({ error }: { error: Error }) {
 }
 
 function Logic() {
+    const [conversationMode, setConversationMode] = useState<ConversationMode>("realtime_voice_mirror")
+
+    useEffect(() => {
+        const savedMode = localStorage.getItem("conversationMode")
+        if (savedMode === "realtime_voice_mirror" || savedMode === "agent_builder_text") {
+            setConversationMode(savedMode)
+        }
+    }, [])
+
+    useEffect(() => {
+        localStorage.setItem("conversationMode", conversationMode)
+    }, [conversationMode])
+
     // Use custom hooks for different aspects of the application
     const { selectedAgentName, setSelectedAgentName, selectedAgentConfigSet, handleSelectedAgentChange, agentSetKey } =
         useAgentSelection()
@@ -57,6 +71,7 @@ function Logic() {
         selectedAgentName,
         setSelectedAgentName,
         selectedAgentConfigSet,
+        conversationMode,
     })
 
     return (
@@ -66,6 +81,8 @@ function Logic() {
                 selectedAgentName={selectedAgentName}
                 selectedAgentConfigSet={selectedAgentConfigSet}
                 onAgentChange={handleSelectedAgentChange}
+                conversationMode={conversationMode}
+                onConversationModeChange={setConversationMode}
             />
 
             <Main
@@ -79,6 +96,7 @@ function Logic() {
             />
 
             <BottomToolbar
+                conversationMode={conversationMode}
                 sessionStatus={sessionStatus}
                 onToggleConnection={onToggleConnection}
                 isPTTActive={isPTTActive}

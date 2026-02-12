@@ -1,7 +1,8 @@
 import React from "react"
-import { SessionStatus } from "@/app/types"
+import { ConversationMode, SessionStatus } from "@/app/types"
 
 interface BottomToolbarProps {
+    conversationMode: ConversationMode
     sessionStatus: SessionStatus
     onToggleConnection: () => void
     isPTTActive: boolean
@@ -16,6 +17,7 @@ interface BottomToolbarProps {
 }
 
 function BottomToolbar({
+    conversationMode,
     sessionStatus,
     onToggleConnection,
     isPTTActive,
@@ -28,10 +30,13 @@ function BottomToolbar({
     isAudioPlaybackEnabled,
     setIsAudioPlaybackEnabled,
 }: BottomToolbarProps) {
+    const isRealtimeVoiceMode = conversationMode === "realtime_voice_mirror"
     const isConnected = sessionStatus === "CONNECTED"
     const isConnecting = sessionStatus === "CONNECTING"
+    const isVoiceControlsDisabled = !isRealtimeVoiceMode
 
     function getConnectionButtonLabel() {
+        if (!isRealtimeVoiceMode) return "Text mode active"
         if (isConnected) return "Disconnect"
         if (isConnecting) return "Connecting..."
         return "Connect"
@@ -39,6 +44,9 @@ function BottomToolbar({
 
     function getConnectionButtonClasses() {
         const baseClasses = "text-white text-base p-2 w-36 rounded w-full sm:w-36"
+        if (!isRealtimeVoiceMode) {
+            return `bg-gray-500 cursor-not-allowed ${baseClasses}`
+        }
         const cursorClass = isConnecting ? "cursor-not-allowed" : "cursor-pointer"
 
         if (isConnected) {
@@ -51,7 +59,15 @@ function BottomToolbar({
 
     return (
         <div className="p-4 flex flex-row items-center justify-center gap-x-8">
-            <button onClick={onToggleConnection} className={getConnectionButtonClasses()} disabled={isConnecting}>
+            <div className="text-xs sm:text-sm text-gray-600 whitespace-nowrap max-w-[16rem] overflow-hidden text-ellipsis">
+                Mode:{" "}
+                {isRealtimeVoiceMode ? "Realtime voice (mirrored to Agent Builder)" : "Text via Agent Builder"}
+            </div>
+            <button
+                onClick={onToggleConnection}
+                className={getConnectionButtonClasses()}
+                disabled={isConnecting || isVoiceControlsDisabled}
+            >
                 {getConnectionButtonLabel()}
             </button>
 
@@ -62,7 +78,7 @@ function BottomToolbar({
                         type="checkbox"
                         checked={isPTTActive}
                         onChange={(e) => setIsPTTActive(e.target.checked)}
-                        disabled={!isConnected}
+                        disabled={!isConnected || isVoiceControlsDisabled}
                         className="w-4 h-4 sm:w-5 sm:h-5"
                     />
                     <label htmlFor="push-to-talk" className="cursor-pointer text-xs sm:text-sm">
@@ -74,7 +90,7 @@ function BottomToolbar({
                     onMouseUp={handleTalkButtonUp}
                     onTouchStart={handleTalkButtonDown}
                     onTouchEnd={handleTalkButtonUp}
-                    disabled={!isPTTActive}
+                    disabled={!isPTTActive || isVoiceControlsDisabled}
                     className={`py-1 px-3 rounded text-xs sm:text-sm cursor-pointer 
             ${!isPTTActive ? "bg-gray-100 text-gray-400" : isPTTUserSpeaking ? "bg-gray-300" : "bg-gray-200"}`}
                 >
@@ -89,7 +105,7 @@ function BottomToolbar({
                             type="checkbox"
                             checked={isAudioPlaybackEnabled}
                             onChange={(e) => setIsAudioPlaybackEnabled(e.target.checked)}
-                            disabled={!isConnected}
+                            disabled={!isConnected || isVoiceControlsDisabled}
                             className="w-4 h-4 sm:w-5 sm:h-5"
                         />
                         <label htmlFor="audio-playback" className="cursor-pointer text-xs sm:text-sm">

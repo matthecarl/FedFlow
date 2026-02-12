@@ -78,6 +78,11 @@ function Events({ isExpanded }: EventsProps) {
                         }
                       >
                         {log.eventName}
+                        {log.sourceBackend && (
+                          <span className="ml-2 text-[10px] uppercase tracking-wide text-gray-500">
+                            [{log.sourceBackend}]
+                          </span>
+                        )}
                       </span>
                     </div>
                     <div className="text-gray-500 ml-1 text-xs whitespace-nowrap">

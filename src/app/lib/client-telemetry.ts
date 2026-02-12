@@ -1,24 +1,108 @@
 /**
  * Client-side telemetry utility
  *
- * This module provides functions to directly instrument frontend operations with Elastic APM RUM,
- * creating transactions and spans following the OpenTelemetry semantic conventions.
+ * Canonical path is server-side OpenTelemetry ingestion via /api/telemetry.
+ * During migration, RUM mirroring can remain enabled for dashboard continuity.
  */
 
-import { TokenUsage } from "../types"
+import { ClientTelemetryEnvelope, TokenUsage } from "../types"
 import * as semconv from "./semconv"
 import { startTransaction, captureError } from "./apm-rum"
-/**
- * Records token usage metrics from OpenAI response.done events
- */
+
+type TelemetryTransport = "server" | "rum" | "both"
+
+function isBrowser(): boolean {
+    return typeof window !== "undefined"
+}
+
+function normalizeError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
+}
+
+function getTransportMode(): TelemetryTransport {
+    const raw = process.env.NEXT_PUBLIC_TELEMETRY_TRANSPORT?.toLowerCase()
+    if (raw === "server" || raw === "rum" || raw === "both") {
+        return raw
+    }
+    return "both"
+}
+
+function isRumMirrorEnabled(): boolean {
+    return process.env.NEXT_PUBLIC_TELEMETRY_MIRROR_TO_RUM !== "false"
+}
+
+function shouldSendToServer(): boolean {
+    const mode = getTransportMode()
+    return mode === "server" || mode === "both"
+}
+
+function shouldSendToRum(): boolean {
+    const mode = getTransportMode()
+    if (mode === "rum" || mode === "both") {
+        return true
+    }
+
+    return mode === "server" && isRumMirrorEnabled()
+}
+
+async function postTelemetry(eventType: string, eventData: Record<string, unknown>): Promise<void> {
+    if (!isBrowser() || !shouldSendToServer()) {
+        return
+    }
+
+    const envelope: ClientTelemetryEnvelope = {
+        eventType,
+        eventData,
+        timestamp: new Date().toISOString(),
+        schemaVersion: "v1",
+    }
+
+    const response = await fetch("/api/telemetry", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(envelope),
+        keepalive: true,
+    })
+
+    if (!response.ok) {
+        const body = await response.text().catch(() => "")
+        throw new Error(`Telemetry endpoint returned ${response.status}: ${body || response.statusText}`)
+    }
+}
+
+function mirrorRumTransaction(name: string, type: string, labels: Record<string, string | number | boolean>, error?: unknown): void {
+    if (!isBrowser() || !shouldSendToRum()) {
+        return
+    }
+
+    const transaction = startTransaction(name, type)
+    if (!transaction) {
+        return
+    }
+
+    transaction.addLabels(labels)
+    if (error) {
+        captureError(normalizeError(error), { tags: { source: "client-telemetry" } })
+    }
+    transaction.end()
+}
+
 export async function recordTokenUsage(usageData: TokenUsage, model?: string) {
     try {
-        // Start a transaction for token usage
-        const transaction = startTransaction("gen_ai.token_usage", "metrics")
-        if (!transaction) return
+        const eventData: Record<string, unknown> = {
+            totalTokens: usageData.total_tokens,
+            inputTokens: usageData.input_tokens,
+            outputTokens: usageData.output_tokens,
+            model: model || "unknown",
+            input_token_details: usageData.input_token_details,
+            output_token_details: usageData.output_token_details,
+        }
 
-        // Set attributes
-        transaction.addLabels({
+        await postTelemetry("token_usage", eventData)
+
+        mirrorRumTransaction("gen_ai.token_usage", "metrics", {
             [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
             [semconv.ATTR_GEN_AI_TOTAL_TOKENS]: usageData.total_tokens,
@@ -26,147 +110,86 @@ export async function recordTokenUsage(usageData: TokenUsage, model?: string) {
             [semconv.ATTR_GEN_AI_USAGE_OUTPUT_TOKENS]: usageData.output_tokens,
             [semconv.ATTR_GEN_AI_RESPONSE_MODEL]: model || "unknown",
         })
-
-        // Add input token details if available
-        if (usageData.input_token_details) {
-            transaction.addLabels({
-                [semconv.ATTR_GEN_AI_INPUT_TEXT_TOKENS]: usageData.input_token_details.text_tokens,
-                [semconv.ATTR_GEN_AI_INPUT_AUDIO_TOKENS]: usageData.input_token_details.audio_tokens,
-            })
-
-            // Add cached tokens information
-            if (usageData.input_token_details.cached_tokens) {
-                transaction.addLabels({
-                    [semconv.ATTR_GEN_AI_CACHED_TOKENS]: usageData.input_token_details.cached_tokens,
-                })
-
-                // Add cached tokens details if available
-                if (usageData.input_token_details.cached_tokens_details) {
-                    transaction.addLabels({
-                        [semconv.ATTR_GEN_AI_CACHED_TEXT_TOKENS]:
-                            usageData.input_token_details.cached_tokens_details.text_tokens,
-                        [semconv.ATTR_GEN_AI_CACHED_AUDIO_TOKENS]:
-                            usageData.input_token_details.cached_tokens_details.audio_tokens,
-                    })
-                }
-            }
-        }
-
-        // Add output token details if available
-        if (usageData.output_token_details) {
-            transaction.addLabels({
-                [semconv.ATTR_GEN_AI_OUTPUT_TEXT_TOKENS]: usageData.output_token_details.text_tokens,
-                [semconv.ATTR_GEN_AI_OUTPUT_AUDIO_TOKENS]: usageData.output_token_details.audio_tokens,
-            })
-        }
-
-        // End the transaction
-        transaction.end()
     } catch (error) {
         console.error("Error recording token usage:", error)
-        captureError(error instanceof Error ? error : String(error), { tags: { source: "client-telemetry" } })
+        captureError(normalizeError(error), { tags: { source: "client-telemetry" } })
     }
 }
 
-/**
- * Records detailed information from response.done events
- */
 export async function recordResponseDoneDetails(responseData: any) {
     try {
-        // Start a transaction for response details
-        const transaction = startTransaction("gen_ai.response_details", "app")
-        if (!transaction) return
+        const output = responseData?.output?.[0] || {}
+        const content = Array.isArray(output?.content) ? output.content : []
+        const transcriptContent = content.find((c: any) => typeof c?.transcript === "string" && c.transcript.trim())
+        const transcript = transcriptContent?.transcript || ""
 
-        const output = responseData.output?.[0] || {}
-        const content = output.content || []
+        const eventData: Record<string, unknown> = {
+            responseId: responseData?.id,
+            responseStatus: responseData?.status,
+            conversationId: responseData?.conversation_id,
+            model: responseData?.model,
+            voice: responseData?.voice,
+            outputAudioFormat: responseData?.output_audio_format,
+            temperature: responseData?.temperature,
+            maxOutputTokens: responseData?.max_output_tokens,
+            modalities: responseData?.modalities,
+            outputItemId: output?.id,
+            outputItemType: output?.type,
+            outputItemStatus: output?.status,
+            outputItemRole: output?.role,
+            contentTypes: content.map((c: any) => c?.type).filter(Boolean),
+            hasAudioContent: content.some((c: any) => c?.type === "audio"),
+            hasTranscript: transcript.length > 0,
+            transcriptLength: transcript.length,
+            transcriptPreview: transcript.slice(0, 150),
+        }
 
-        // Find audio content with transcript if it exists
-        const audioContent = content.find((c: any) => c.type === "audio" && c.transcript)
-        const transcript = audioContent?.transcript || ""
+        await postTelemetry("response_details", eventData)
 
-        // Get first few characters of transcript for logging
-        const transcriptPreview =
-            transcript.length > 0 ? transcript.substring(0, 150) + (transcript.length > 150 ? "..." : "") : ""
-
-        // Set attributes using semantic conventions
-        transaction.addLabels({
+        mirrorRumTransaction("gen_ai.response_details", "app", {
             [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-            [semconv.ATTR_GEN_AI_RESPONSE_ID]: responseData.id,
-            [semconv.ATTR_GEN_AI_RESPONSE_STATUS]: responseData.status,
-            [semconv.ATTR_GEN_AI_CONVERSATION_ID]: responseData.conversation_id,
-            [semconv.ATTR_GEN_AI_VOICE]: responseData.voice,
-            [semconv.ATTR_GEN_AI_OUTPUT_AUDIO_FORMAT]: responseData.output_audio_format,
-            [semconv.ATTR_GEN_AI_TEMPERATURE]: responseData.temperature,
-            [semconv.ATTR_GEN_AI_MAX_OUTPUT_TOKENS]: responseData.max_output_tokens,
-            [semconv.ATTR_GEN_AI_OUTPUT_ITEM_ID]: output.id,
-            [semconv.ATTR_GEN_AI_OUTPUT_ITEM_TYPE]: output.type,
-            [semconv.ATTR_GEN_AI_OUTPUT_ITEM_STATUS]: output.status,
-            [semconv.ATTR_GEN_AI_OUTPUT_ITEM_ROLE]: output.role,
-            [semconv.ATTR_GEN_AI_HAS_AUDIO_CONTENT]: content.some((c: any) => c.type === "audio"),
-            [semconv.ATTR_GEN_AI_HAS_TRANSCRIPT]: !!transcriptPreview,
+            [semconv.ATTR_GEN_AI_RESPONSE_ID]: responseData?.id || "unknown",
+            [semconv.ATTR_GEN_AI_RESPONSE_STATUS]: responseData?.status || "unknown",
+            [semconv.ATTR_GEN_AI_CONVERSATION_ID]: responseData?.conversation_id || "unknown",
             [semconv.ATTR_GEN_AI_TRANSCRIPT_LENGTH]: transcript.length,
         })
-
-        // For array values like modalities and content types, convert to comma-separated strings
-        if (responseData.modalities) {
-            transaction.addLabels({
-                [semconv.ATTR_GEN_AI_MODALITIES]: responseData.modalities.join(","),
-            })
-        }
-
-        if (content.length > 0) {
-            transaction.addLabels({
-                [semconv.ATTR_GEN_AI_CONTENT_TYPES]: content.map((c: any) => c.type).join(","),
-            })
-        }
-
-        // End the transaction
-        transaction.end()
     } catch (error) {
         console.error("Error recording response details:", error)
-        window.elasticApm?.captureError(error instanceof Error ? error : String(error))
+        captureError(normalizeError(error), { tags: { source: "client-telemetry" } })
     }
 }
 
-/**
- * Records tool call telemetry
- */
 export async function recordToolCall(toolName: string, success: boolean, resultCount?: number, error?: any) {
     try {
-        // Start a transaction for tool call
-        const transaction = window.elasticApm?.startTransaction("gen_ai.tool_call", "app")
-        if (!transaction) return
-
-        // Add semantic convention labels
-        transaction.addLabels({
-            [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
-            [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-            [semconv.ATTR_GEN_AI_TOOL_CALLED]: true,
-            [semconv.ATTR_GEN_AI_TOOL_NAME]: toolName,
-            [semconv.ATTR_GEN_AI_TOOL_SUCCESS]: success,
-            ...(resultCount !== undefined ? { [semconv.ATTR_GEN_AI_TOOL_RESULT_COUNT]: resultCount } : {}),
-        })
-
-        // If there's an error, capture it
-        if (error) {
-            transaction.addLabels({
-                [semconv.ATTR_GEN_AI_TOOL_ERROR]: error,
-            })
-            window.elasticApm?.captureError(error instanceof Error ? error : String(error))
+        const eventData: Record<string, unknown> = {
+            toolName,
+            success,
+            resultCount,
+            error: error ? normalizeError(error) : undefined,
         }
 
-        // End the transaction
-        transaction.end()
-    } catch (error) {
-        console.error("Error recording tool call:", error)
-        window.elasticApm?.captureError(error instanceof Error ? error : String(error))
+        await postTelemetry("tool_call", eventData)
+
+        mirrorRumTransaction(
+            "gen_ai.tool_call",
+            "app",
+            {
+                [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
+                [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
+                [semconv.ATTR_GEN_AI_TOOL_CALLED]: true,
+                [semconv.ATTR_GEN_AI_TOOL_NAME]: toolName,
+                [semconv.ATTR_GEN_AI_TOOL_SUCCESS]: success,
+                ...(resultCount !== undefined ? { [semconv.ATTR_GEN_AI_TOOL_RESULT_COUNT]: resultCount } : {}),
+            },
+            error,
+        )
+    } catch (err) {
+        console.error("Error recording tool call:", err)
+        captureError(normalizeError(err), { tags: { source: "client-telemetry" } })
     }
 }
 
-/**
- * Records OpenAI realtime API fetch calls
- */
 export async function recordRealtimeFetch(
     url: string,
     method: string,
@@ -175,201 +198,146 @@ export async function recordRealtimeFetch(
     model?: string,
 ) {
     try {
-        // Start a transaction for realtime fetch
-        const transaction = window.elasticApm?.startTransaction("gen_ai.realtime_fetch", "external")
-        if (!transaction) return
-
-        // Add labels with semantic conventions
-        transaction.addLabels({
-            [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
-            [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-            "http.url": url,
-            "http.method": method,
-            ...(statusCode ? { "http.status_code": statusCode } : {}),
-            ...(model ? { [semconv.ATTR_GEN_AI_RESPONSE_MODEL]: model } : {}),
-        })
-
-        // If there's an error, capture it
-        if (error) {
-            window.elasticApm?.captureError(error instanceof Error ? error : String(error))
+        const eventData: Record<string, unknown> = {
+            url,
+            method,
+            statusCode,
+            error: error ? normalizeError(error) : undefined,
+            model,
         }
 
-        // End the transaction
-        transaction.end()
-    } catch (error) {
-        console.error("Error recording realtime fetch:", error)
-        window.elasticApm?.captureError(error instanceof Error ? error : String(error))
+        await postTelemetry("realtime_fetch", eventData)
+
+        mirrorRumTransaction(
+            "gen_ai.realtime_fetch",
+            "external",
+            {
+                [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
+                [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
+                "http.url": url,
+                "http.method": method,
+                ...(statusCode ? { "http.status_code": statusCode } : {}),
+                ...(model ? { [semconv.ATTR_GEN_AI_RESPONSE_MODEL]: model } : {}),
+            },
+            error,
+        )
+    } catch (err) {
+        console.error("Error recording realtime fetch:", err)
+        captureError(normalizeError(err), { tags: { source: "client-telemetry" } })
     }
 }
 
-/**
- * Records server event telemetry
- */
 export async function recordServerEvent(eventType: string, eventData: any) {
     try {
-        // Start a transaction for server event
-        const transaction = window.elasticApm?.startTransaction("gen_ai.server_event", "app")
-        if (!transaction) return
+        const normalizedEventData: Record<string, unknown> = {
+            ...eventData,
+            sourceEventType: eventType,
+            eventId: eventData?.eventId || eventData?.event_id,
+            responseId: eventData?.responseId || eventData?.response_id,
+            itemId: eventData?.itemId || eventData?.item_id,
+            sessionId: eventData?.sessionId || eventData?.session_id,
+            conversationId: eventData?.conversationId || eventData?.conversation_id,
+            model: eventData?.model,
+        }
 
-        // Add event data as labels following semantic conventions
-        transaction.addLabels({
+        await postTelemetry(eventType, normalizedEventData)
+
+        mirrorRumTransaction("gen_ai.server_event", "app", {
             [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
             [semconv.ATTR_GEN_AI_EVENT_TYPE]: eventType,
-            ...(eventData.agent ? { agent: eventData.agent } : {}),
-            ...(eventData.itemType ? { "item.type": eventData.itemType } : {}),
-            ...(eventData.itemRole ? { "item.role": eventData.itemRole } : {}),
+            ...(normalizedEventData.responseId ? { [semconv.ATTR_GEN_AI_RESPONSE_ID]: String(normalizedEventData.responseId) } : {}),
+            ...(normalizedEventData.eventId ? { [semconv.ATTR_GEN_AI_EVENT_ID]: String(normalizedEventData.eventId) } : {}),
         })
-
-        // End the transaction
-        transaction.end()
     } catch (error) {
         console.error("Error recording server event:", error)
-        window.elasticApm?.captureError(error instanceof Error ? error : String(error))
+        captureError(normalizeError(error), { tags: { source: "client-telemetry" } })
     }
 }
 
-/**
- * Records the full transcript from a completed response for archival purposes
- */
 export async function recordFullTranscript(responseData: any) {
     try {
-        const output = responseData.output?.[0] || {}
-        const content = output.content || []
+        const output = responseData?.output?.[0] || {}
+        const content = Array.isArray(output?.content) ? output.content : []
+        const transcriptContent = content.find((c: any) => typeof c?.transcript === "string" && c.transcript.trim())
+        const transcript = transcriptContent?.transcript || ""
 
-        // Find audio content with transcript
-        const audioContent = content.find((c: any) => c.type === "audio" && c.transcript)
-        const transcript = audioContent?.transcript || ""
-
-        // Only proceed if we actually have a transcript
         if (!transcript) {
             return
         }
 
-        // Start a transaction for full transcript
-        const transaction = window.elasticApm?.startTransaction("gen_ai.full_transcript", "app")
-        if (!transaction) return
+        const eventData: Record<string, unknown> = {
+            responseId: responseData?.id,
+            outputItemId: output?.id,
+            status: responseData?.status,
+            conversationId: responseData?.conversation_id,
+            transcript,
+            transcriptSource: "assistant",
+            role: "assistant",
+            timestamp: Date.now(),
+        }
 
-        // Add labels following semantic conventions
-        transaction.addLabels({
+        await postTelemetry("full_transcript", eventData)
+
+        mirrorRumTransaction("gen_ai.full_transcript", "app", {
             [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-            [semconv.ATTR_GEN_AI_RESPONSE_ID]: responseData.id,
-            [semconv.ATTR_GEN_AI_OUTPUT_ITEM_ID]: output.id,
-            [semconv.ATTR_GEN_AI_TRANSCRIPT_TIMESTAMP]: Date.now(),
+            [semconv.ATTR_GEN_AI_RESPONSE_ID]: responseData?.id || "unknown",
             [semconv.ATTR_GEN_AI_TRANSCRIPT_LENGTH]: transcript.length,
             [semconv.ATTR_GEN_AI_TRANSCRIPT_ROLE]: "assistant",
-            [semconv.ATTR_GEN_AI_TRANSCRIPT_SOURCE]: "assistant",
-            [semconv.ATTR_GEN_AI_RESPONSE_STATUS]: responseData.status,
-            [semconv.ATTR_GEN_AI_CONVERSATION_ID]: responseData.conversation_id,
         })
-
-        // End the transaction
-        transaction.end()
     } catch (error) {
         console.error("Error recording full transcript:", error)
-        window.elasticApm?.captureError(error instanceof Error ? error : String(error))
+        captureError(normalizeError(error), { tags: { source: "client-telemetry" } })
     }
 }
 
-/**
- * Records user audio transcription from input_audio_transcription.completed events
- */
 export async function recordUserTranscript(event: any) {
     try {
-        const transcript = event.transcript || ""
-
-        // Only proceed if we actually have a transcript
+        const transcript = event?.transcript || ""
         if (!transcript || transcript === "\n") {
             return
         }
 
-        // Start a transaction for user transcript
-        const transaction = window.elasticApm?.startTransaction("gen_ai.user_transcript", "app")
-        if (!transaction) return
+        const eventData: Record<string, unknown> = {
+            eventId: event?.event_id,
+            itemId: event?.item_id,
+            contentIndex: event?.content_index,
+            transcript,
+            timestamp: Date.now(),
+            role: "user",
+            transcriptSource: "user",
+        }
 
-        // Add labels following semantic conventions
-        transaction.addLabels({
+        await postTelemetry("user_transcript", eventData)
+
+        mirrorRumTransaction("gen_ai.user_transcript", "app", {
             [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-            [semconv.ATTR_GEN_AI_EVENT_ID]: event.event_id,
-            [semconv.ATTR_GEN_AI_ITEM_ID]: event.item_id,
-            [semconv.ATTR_GEN_AI_TRANSCRIPT_TIMESTAMP]: Date.now(),
+            [semconv.ATTR_GEN_AI_EVENT_ID]: event?.event_id || "unknown",
+            [semconv.ATTR_GEN_AI_ITEM_ID]: event?.item_id || "unknown",
             [semconv.ATTR_GEN_AI_TRANSCRIPT_LENGTH]: transcript.length,
-            [semconv.ATTR_GEN_AI_CONTENT_INDEX]: event.content_index,
-            [semconv.ATTR_GEN_AI_TRANSCRIPT_ROLE]: "user",
-            [semconv.ATTR_GEN_AI_TRANSCRIPT_SOURCE]: "user",
         })
-
-        // End the transaction
-        transaction.end()
     } catch (error) {
         console.error("Error recording user transcript:", error)
-        window.elasticApm?.captureError(error instanceof Error ? error : String(error))
+        captureError(normalizeError(error), { tags: { source: "client-telemetry" } })
     }
 }
 
-/**
- * Records a complete response.done event directly, including token usage and all metadata
- */
 export async function recordCompleteDoneEvent(eventData: any) {
     try {
-        // Start a parent transaction for the complete event
-        const transaction = window.elasticApm?.startTransaction("gen_ai.response.done", "app")
-        if (!transaction) return
+        await postTelemetry("response.done", eventData)
 
-        // Add common labels
-        transaction.addLabels({
+        const response = eventData?.response
+        mirrorRumTransaction("gen_ai.response.done", "app", {
             [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
+            [semconv.ATTR_GEN_AI_RESPONSE_ID]: response?.id || "unknown",
+            [semconv.ATTR_GEN_AI_RESPONSE_STATUS]: response?.status || "unknown",
+            [semconv.ATTR_GEN_AI_RESPONSE_MODEL]: response?.model || "unknown",
         })
-
-        // First, extract and record token usage as span
-        if (eventData.response?.usage) {
-            const tokenUsageSpan = transaction.startSpan("gen_ai.token_usage", "metrics")
-            if (tokenUsageSpan) {
-                const usage = eventData.response.usage
-                tokenUsageSpan.addLabels({
-                    [semconv.ATTR_GEN_AI_TOTAL_TOKENS]: usage.total_tokens,
-                    [semconv.ATTR_GEN_AI_USAGE_INPUT_TOKENS]: usage.input_tokens,
-                    [semconv.ATTR_GEN_AI_USAGE_OUTPUT_TOKENS]: usage.output_tokens,
-                    [semconv.ATTR_GEN_AI_RESPONSE_MODEL]: eventData.response.model || "unknown",
-                })
-                tokenUsageSpan.end()
-            }
-        }
-
-        // Second, record response details as a span
-        if (eventData.response) {
-            const responseDetailsSpan = transaction.startSpan("gen_ai.response_details", "app")
-            if (responseDetailsSpan) {
-                const output = eventData.response.output?.[0] || {}
-
-                responseDetailsSpan.addLabels({
-                    [semconv.ATTR_GEN_AI_RESPONSE_ID]: eventData.response.id,
-                    [semconv.ATTR_GEN_AI_CONVERSATION_ID]: eventData.response.conversation_id,
-                    [semconv.ATTR_GEN_AI_RESPONSE_MODEL]: eventData.response.model,
-                    [semconv.ATTR_GEN_AI_RESPONSE_STATUS]: eventData.response.status,
-                    [semconv.ATTR_GEN_AI_OUTPUT_ITEM_ID]: output.id,
-                })
-                responseDetailsSpan.end()
-            }
-        }
-
-        // End the parent transaction
-        transaction.end()
-
-        // Extract and record token usage separately for backward compatibility
-        if (eventData.response?.usage) {
-            await recordTokenUsage(eventData.response.usage, eventData.response.model)
-        }
-
-        // Record response details separately for backward compatibility
-        if (eventData.response) {
-            await recordResponseDoneDetails(eventData.response)
-        }
     } catch (error) {
         console.error("Error recording complete done event:", error)
-        window.elasticApm?.captureError(error instanceof Error ? error : String(error))
+        captureError(normalizeError(error), { tags: { source: "client-telemetry" } })
     }
 }

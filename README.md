@@ -17,6 +17,76 @@ You should be able to use this repo to prototype your own multi-agent realtime v
 - Start the server with `npm run dev`
 - Open your browser to [http://localhost:3000](http://localhost:3000) to see the app. It should automatically connect to the `semanticSearch` Agent Set.
 
+## Unified Voice + Text (`/`)
+
+This app now uses a single combined UI at [http://localhost:3000](http://localhost:3000):
+
+- OpenAI Realtime remains authoritative for user-visible assistant responses
+- Typed and voice turns are mirrored to Agent Builder for Elastic-side visibility
+- Mirror events are indexed into Elasticsearch for filtering and analysis
+
+### Required env vars for Agent Builder mirroring
+
+- `KIBANA_URL`
+- `KIBANA_API_KEY` (preferred) or `KIBANA_USERNAME` + `KIBANA_PASSWORD`
+- `AGENT_BUILDER_AGENT_ID` (defaults to `elastic-ai-agent` if omitted)
+- Kibana credentials must have Agent Builder access (for example `read_agent_builder`)
+- `AGENT_BUILDER_AGENT_MAP_JSON` (optional JSON map from realtime agent name to Agent Builder agent id)
+
+Compatibility fallbacks:
+
+- If `KIBANA_URL` is missing, the app derives Kibana from `ELASTICSEARCH_CAPSTONE_URL` by replacing `.es.` with `.kb.` when the hostname includes `.es.`
+- If `KIBANA_API_KEY` is missing, the app tries `ELASTICSEARCH_LOGSAI_API_KEY`, then `ELASTICSEARCH_CAPSTONE_API_KEY`
+
+Optional:
+
+- `KIBANA_SPACE_ID` for space-aware API paths
+- `AGENT_BUILDER_INDEX_NAME` to override the default `agent-builder-chat-events-v1` index
+
+### Telemetry env vars
+
+Server-side OpenTelemetry (canonical path for custom `gen_ai.*` events):
+
+- `ENABLE_OTEL=true` to enable local/dev OTel bootstrap
+- `OTEL_EXPORTER_OTLP_ENDPOINT` (Elastic APM OTLP endpoint)
+- `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`
+- `OTEL_SERVICE_NAME` (for service identity)
+- `TELEMETRY_CAPTURE_FULL_CONTENT=true|false` (defaults to `true`)
+
+Client telemetry transport:
+
+- `NEXT_PUBLIC_TELEMETRY_TRANSPORT=server|rum|both` (defaults to `both` for migration overlap)
+- `NEXT_PUBLIC_TELEMETRY_MIRROR_TO_RUM=true|false` (defaults to `true`)
+
+Elastic RUM bootstrap (for built-in RUM dashboards):
+
+- `NEXT_PUBLIC_ELASTIC_APM_SERVER_URL`
+- `NEXT_PUBLIC_ELASTIC_APM_SERVICE_NAME`
+- `NEXT_PUBLIC_ELASTIC_APM_ENVIRONMENT` (optional, defaults to `NODE_ENV`)
+- `NEXT_PUBLIC_ELASTIC_APM_SERVICE_VERSION` (optional, defaults to app version)
+
+### Data visibility in Elastic
+
+Realtime + Agent Builder mirror flow emits observability telemetry and persists events to Elasticsearch:
+
+- Server-side OTel spans/metrics for custom `gen_ai.*` instrumentation
+- Optional mirrored RUM transactions during migration (`NEXT_PUBLIC_TELEMETRY_TRANSPORT=both`)
+- Full realtime and mirror event records indexed into `AGENT_BUILDER_INDEX_NAME`
+
+Migration note:
+
+- After validating dashboards, set `NEXT_PUBLIC_TELEMETRY_MIRROR_TO_RUM=false` and `NEXT_PUBLIC_TELEMETRY_TRANSPORT=server`.
+
+Agent Builder model note:
+
+- The agent details API returns tool configuration, but does not reliably expose the underlying model in this payload.
+- Treat Kibana Agent Builder / inference configuration UI as the source of truth for model selection.
+
+Persisted chat indexing uses:
+
+- `ELASTICSEARCH_CAPSTONE_URL`
+- `ELASTICSEARCH_LOGSAI_API_KEY`
+
 ### Next steps
 
 - Check out the configs in `src/app/agentConfigs`. The example above is a minimal demo that illustrates the core concepts.

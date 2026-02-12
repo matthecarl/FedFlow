@@ -1,56 +1,95 @@
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc"
+import os from "os"
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http"
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http"
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
+import { HttpInstrumentation } from "@opentelemetry/instrumentation-http"
+import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs"
+import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics"
 import { NodeSDK } from "@opentelemetry/sdk-node"
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-node"
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc"
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-grpc"
-import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs"
-import { HttpInstrumentation } from "@opentelemetry/instrumentation-http"
-import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics"
-import { OpenAIInstrumentation } from "@elastic/opentelemetry-instrumentation-openai"
-import os from "os"
 
-const logRecordProcessor = new BatchLogRecordProcessor(new OTLPLogExporter())
+type OtelRuntimeState = {
+    sdk: NodeSDK | null
+    metricReader: PeriodicExportingMetricReader | null
+    started: boolean
+    shutdownRegistered: boolean
+}
 
-const metricReader = new PeriodicExportingMetricReader({
-    exportIntervalMillis: 60000,
-    exporter: new OTLPMetricExporter({ timeoutMillis: 30000 }),
-})
+const OTEL_STATE_KEY = "__realtimeOtelRuntimeState"
 
-const sdk = new NodeSDK({
-    logRecordProcessors: [logRecordProcessor],
-    metricReader,
-    instrumentations: [
-        new HttpInstrumentation(),
-        new OpenAIInstrumentation({
-            captureMessageContent: true,
-        }),
-    ],
-    // Use BatchSpanProcessor instead of SimpleSpanProcessor to reduce concurrent exports
-    spanProcessors: [
-        new BatchSpanProcessor(new OTLPTraceExporter(), {
-            // Increase the scheduling delay and reduce max export batch size
-            scheduledDelayMillis: 3000,
-            maxExportBatchSize: 200,
-            exportTimeoutMillis: 10000,
-        }),
-    ],
-})
+declare global {
+    // eslint-disable-next-line no-var
+    var __realtimeOtelRuntimeState: OtelRuntimeState | undefined
+}
 
-async function shutdownSDK() {
-    await metricReader.forceFlush()
-    try {
-        await sdk.shutdown()
-    } catch (err) {
-        console.warn("Warning: error shutting down OTel SDK", err)
+function debugLog(...args: unknown[]) {
+    if (process.env.OTEL_LOG_LEVEL === "debug") {
+        console.log("[otel]", ...args)
     }
 }
 
-process.on("SIGTERM", async () => {
-    await shutdownSDK()
-    process.exit(128 + os.constants.signals.SIGTERM)
-})
+const runtimeState =
+    (globalThis as typeof globalThis & Record<string, OtelRuntimeState | undefined>)[OTEL_STATE_KEY] ||
+    ((globalThis as typeof globalThis & Record<string, OtelRuntimeState | undefined>)[OTEL_STATE_KEY] = {
+        sdk: null,
+        metricReader: null,
+        started: false,
+        shutdownRegistered: false,
+    })
 
-process.once("beforeExit", async () => {
-    await shutdownSDK()
-})
-sdk.start()
+async function shutdownSDK() {
+    if (!runtimeState.sdk) {
+        return
+    }
+
+    try {
+        await runtimeState.metricReader?.forceFlush()
+        await runtimeState.sdk.shutdown()
+    } catch (error) {
+        console.warn("Warning: error shutting down OTel SDK", error)
+    } finally {
+        runtimeState.sdk = null
+        runtimeState.metricReader = null
+        runtimeState.started = false
+    }
+}
+
+if (!runtimeState.started) {
+    const metricReader = new PeriodicExportingMetricReader({
+        exportIntervalMillis: 60000,
+        exporter: new OTLPMetricExporter({ timeoutMillis: 30000 }),
+    })
+
+    const sdk = new NodeSDK({
+        logRecordProcessors: [new BatchLogRecordProcessor(new OTLPLogExporter({ timeoutMillis: 30000 }))],
+        metricReader,
+        instrumentations: [new HttpInstrumentation()],
+        spanProcessors: [
+            new BatchSpanProcessor(new OTLPTraceExporter({ timeoutMillis: 10000 }), {
+                scheduledDelayMillis: 3000,
+                maxExportBatchSize: 200,
+                exportTimeoutMillis: 10000,
+            }),
+        ],
+    })
+
+    runtimeState.sdk = sdk
+    runtimeState.metricReader = metricReader
+    runtimeState.started = true
+
+    void sdk.start()
+    debugLog("OpenTelemetry NodeSDK initialized")
+}
+
+if (!runtimeState.shutdownRegistered) {
+    process.on("SIGTERM", async () => {
+        await shutdownSDK()
+        process.exit(128 + os.constants.signals.SIGTERM)
+    })
+
+    process.once("beforeExit", async () => {
+        await shutdownSDK()
+    })
+
+    runtimeState.shutdownRegistered = true
+}

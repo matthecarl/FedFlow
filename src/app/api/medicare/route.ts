@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { SpanStatusCode, trace } from "@opentelemetry/api"
 import { esClient, SearchResult, extractBodyContentAndUrls } from "../utility"
 
 export async function GET(request: NextRequest) {
@@ -51,8 +52,16 @@ export async function GET(request: NextRequest) {
         })
     } catch (error) {
         console.error("Elasticsearch search error:", error)
-        const errorToCapture = error instanceof Error ? error : new Error(String(error))
-        window.elasticApm?.captureError(errorToCapture)
+        const errorToRecord = error instanceof Error ? error : new Error(String(error))
+        const activeSpan = trace.getActiveSpan()
+        if (activeSpan) {
+            activeSpan.recordException(errorToRecord)
+            activeSpan.setStatus({
+                code: SpanStatusCode.ERROR,
+                message: errorToRecord.message,
+            })
+        }
+
         return NextResponse.json(
             {
                 error: "Failed to perform search",

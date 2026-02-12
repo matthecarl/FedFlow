@@ -31,6 +31,7 @@ export function useHandleServerEvent({
     selectedAgentConfigSet,
     sendClientEvent,
     setSelectedAgentName,
+    mirrorTurn,
 }: UseHandleServerEventParams) {
     // Access to transcript state and methods
     const {
@@ -169,93 +170,151 @@ export function useHandleServerEvent({
         }
     }
 
+    const normalizeAgentToken = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, "")
+
+    const resolveTransferDestinationAgent = (args: any): { agentName: string | null; source: string } => {
+        const availableAgents = selectedAgentConfigSet || []
+
+        const candidateValues = [
+            args?.destination_agent,
+            args?.destinationAgent,
+            args?.destination,
+            args?.target_agent,
+            args?.targetAgent,
+            args?.agent_name,
+            args?.agentName,
+            args?.agent,
+        ].filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+
+        const findAvailableAgent = (rawValue: string): string | null => {
+            const trimmed = rawValue.trim()
+            const normalized = normalizeAgentToken(trimmed)
+
+            // Exact/case-insensitive match
+            const exact = availableAgents.find((agent) => agent.name.toLowerCase() === trimmed.toLowerCase())
+            if (exact) {
+                return exact.name
+            }
+
+            // Fuzzy tokenized match for names like "Veteran Affairs Expert" -> "VA"
+            const fuzzy = availableAgents.find((agent) => {
+                const agentToken = normalizeAgentToken(agent.name)
+                return normalized.includes(agentToken) || agentToken.includes(normalized)
+            })
+            if (fuzzy) {
+                return fuzzy.name
+            }
+
+            const aliasMap: Record<string, string> = {
+                veteranaffairsexpert: "VA",
+                veteransaffairsexpert: "VA",
+                vaexpert: "VA",
+                medicarexpert: "Medicare",
+                elasticexpert: "Elastic",
+                irsexpert: "IRS",
+                bioguideexpert: "BioGuide",
+            }
+            const aliased = aliasMap[normalized]
+            if (aliased) {
+                const aliasMatch = availableAgents.find((agent) => agent.name.toLowerCase() === aliased.toLowerCase())
+                if (aliasMatch) {
+                    return aliasMatch.name
+                }
+            }
+
+            return null
+        }
+
+        for (const candidate of candidateValues) {
+            const resolved = findAvailableAgent(candidate)
+            if (resolved) {
+                return { agentName: resolved, source: "tool_args" }
+            }
+        }
+
+        const contextText = `${args?.rationale_for_transfer ?? ""} ${args?.conversation_context ?? ""}`.toLowerCase()
+        const keywordToAgent: Array<{ matcher: RegExp; preferred: string }> = [
+            { matcher: /\bveteran|veterans|veterans affairs|\bva\b/, preferred: "VA" },
+            { matcher: /\bmedicare|health care|healthcare/, preferred: "Medicare" },
+            { matcher: /\belastic|elasticsearch|observability|siem/, preferred: "Elastic" },
+            { matcher: /\birs|tax\b/, preferred: "IRS" },
+            { matcher: /\bbioguide|congress|representative|senator/, preferred: "BioGuide" },
+        ]
+
+        for (const candidate of keywordToAgent) {
+            if (candidate.matcher.test(contextText)) {
+                const match = availableAgents.find((agent) => agent.name.toLowerCase() === candidate.preferred.toLowerCase())
+                if (match) {
+                    return { agentName: match.name, source: "context_inference" }
+                }
+            }
+        }
+
+        return { agentName: null, source: "none" }
+    }
+
     /**
      * Handle agent transfer requests
      */
     const handleAgentTransfer = (args: any, callId?: string) => {
         console.log("[TRANSFER] Args received:", args)
-        const destinationAgent = args.destination_agent
-        console.log(`[TRANSFER] Request to transfer to agent: ${destinationAgent}`)
-        //todo find the bug and squash it
+        const transferResolution = resolveTransferDestinationAgent(args)
+        const destinationAgent = transferResolution.agentName
         const conversationContext = args.conversation_context
-        // Log transfer request
-        console.log(`[TRANSFER] Request to transfer to agent: ${destinationAgent}`)
+        console.log(`[TRANSFER] Request to transfer to agent: ${destinationAgent ?? "unresolved"}`)
 
         // Find the requested agent config
-        const newAgentConfig = selectedAgentConfigSet?.find((a) => a.name === destinationAgent) || null
+        const newAgentConfig =
+            destinationAgent && selectedAgentConfigSet ? selectedAgentConfigSet.find((a) => a.name === destinationAgent) || null : null
 
         // Perform the transfer if agent exists
         const transferSuccessful = !!newAgentConfig
         if (transferSuccessful) {
             console.log(`[TRANSFER] Found destination agent config: ${destinationAgent}`)
 
-            // Log current state before transfer
-            console.log(`[TRANSFER] Current agent: ${selectedAgentName}`)
-
-            // Store current agent for verification
-            const previousAgent = selectedAgentName
-
-            // Execute transfer
-            setSelectedAgentName(destinationAgent)
-            console.log(`[TRANSFER] Transfer executed to: ${destinationAgent}`)
-
-            // Use setTimeout to verify the transfer completed
-            setTimeout(() => {
-                // This will run after React state updates have been processed
-                console.log(`[TRANSFER] Verification - Previous: ${previousAgent}, Current: ${selectedAgentName}`)
-
-                const verifiedSuccess = selectedAgentName === destinationAgent
-                console.log(`[TRANSFER] Verification ${verifiedSuccess ? "SUCCESS" : "FAILED"}`)
-
-                // Trigger session update to configure the new agent's tools and settings
-                if (verifiedSuccess) {
-                    sendClientEvent(
-                        {
-                            type: "session.update.after.transfer",
-                            agent: destinationAgent,
-                            conversation_context: conversationContext,
-                        },
-                        "Trigger session update after transfer",
-                    )
-                }
-
-                // Send result back to AI with verified status
-                const transferResult = {
-                    destination_agent: destinationAgent,
-                    did_transfer: verifiedSuccess,
+            setSelectedAgentName(destinationAgent as string)
+            sendClientEvent(
+                {
+                    type: "session.update.after.transfer",
+                    agent: destinationAgent,
                     conversation_context: conversationContext,
-                    verified: true,
-                }
-
-                addTranscriptBreadcrumb(`Transfer to ${destinationAgent}`, transferResult)
-
-                sendClientEvent({
-                    type: "conversation.item.create",
-                    item: {
-                        type: "function_call_output",
-                        call_id: callId,
-                        output: JSON.stringify(transferResult),
-                    },
-                })
-            }, 100) // Small delay to allow React state to update
-
-            return // Early return to prevent immediate response
-        } else {
-            captureError(`Error in handleAgentTransfer destinationAgent${JSON.stringify(args, null, 2)}`)
-            console.error(`[TRANSFER] FAILED - destination agent not found: ${destinationAgent}`)
-
-            console.log(`[TRANSFER] Available agents: ${selectedAgentConfigSet?.map((a) => a.name).join(", ")}`)
-            window.alert(
-                `There's an issue with OpenAI Realtime API right now,😩 Please use the select menu in the top corner to change between agents. OR a page refresh might fix things 😎`,
+                },
+                "Trigger session update after transfer",
             )
-            // Prepare failure response
+
             const transferResult = {
                 destination_agent: destinationAgent,
-                did_transfer: false,
-                reason: "Agent not found",
+                did_transfer: true,
+                conversation_context: conversationContext,
+                resolution_source: transferResolution.source,
             }
 
-            addTranscriptBreadcrumb(`Transfer to ${destinationAgent} failed`, transferResult)
+            addTranscriptBreadcrumb(`Transfer to ${destinationAgent}`, transferResult)
+
+            sendClientEvent({
+                type: "conversation.item.create",
+                item: {
+                    type: "function_call_output",
+                    call_id: callId,
+                    output: JSON.stringify(transferResult),
+                },
+            })
+
+            return
+        } else {
+            console.warn(`[TRANSFER] FAILED - destination agent not found: ${destinationAgent ?? "unresolved"}`)
+            console.log(`[TRANSFER] Available agents: ${selectedAgentConfigSet?.map((a) => a.name).join(", ")}`)
+
+            // Prepare failure response
+            const transferResult = {
+                destination_agent: destinationAgent || null,
+                did_transfer: false,
+                reason: destinationAgent ? "Agent not found" : "Missing destination_agent in function call arguments",
+                available_agents: selectedAgentConfigSet?.map((a) => a.name) || [],
+                resolution_source: transferResolution.source,
+            }
+
+            addTranscriptBreadcrumb(`Transfer to ${destinationAgent ?? "unknown"} failed`, transferResult)
 
             sendClientEvent({
                 type: "conversation.item.create",
@@ -604,6 +663,19 @@ export function useHandleServerEvent({
 
         // Record user transcript for telemetry
         recordUserTranscript(event)
+
+        if (finalTranscript !== "[inaudible]") {
+            void mirrorTurn({
+                text: finalTranscript,
+                role: "user",
+                selectedRealtimeAgentName: selectedAgentName,
+                metadata: {
+                    inputType: "voice_transcription",
+                    itemId,
+                    eventId: event.event_id,
+                },
+            })
+        }
     }
 
     /**
@@ -632,7 +704,7 @@ export function useHandleServerEvent({
 
             // Record token usage if available
             if (event.response.usage) {
-                recordTokenUsage(event.response.usage as any, event.response.voice)
+                recordTokenUsage(event.response.usage as any, (event.response as any).model)
             }
 
             // Record the full transcript for completed responses
@@ -640,6 +712,38 @@ export function useHandleServerEvent({
             if (event.response.status === "completed") {
                 recordFullTranscript(event.response)
             }
+        }
+
+        const responseOutputItems = event.response.output as any[]
+        const firstAssistantOutputWithText = responseOutputItems.find((outputItem: any) => {
+            if (!outputItem || outputItem.type !== "message") {
+                return false
+            }
+
+            return (
+                outputItem.content?.some((content: any) => typeof content?.transcript === "string" && content.transcript.trim()) ||
+                outputItem.content?.some((content: any) => typeof content?.text === "string" && content.text.trim())
+            )
+        })
+
+        const assistantText =
+            firstAssistantOutputWithText?.content?.find((content: any) => typeof content?.transcript === "string" && content.transcript.trim())
+                ?.transcript ||
+            firstAssistantOutputWithText?.content?.find((content: any) => typeof content?.text === "string" && content.text.trim())
+                ?.text ||
+            ""
+
+        if (assistantText) {
+            void mirrorTurn({
+                text: assistantText,
+                role: "assistant",
+                selectedRealtimeAgentName: selectedAgentName,
+                metadata: {
+                    sourceEventType: "response.done",
+                    responseStatus: event.response.status,
+                    eventId: event.event_id,
+                },
+            })
         }
 
         // Process each function call in the response
@@ -733,6 +837,9 @@ export function useHandleServerEvent({
                     sessionId: event.session?.id,
                     itemId: event.item_id || event.item?.id,
                     statusDetails: event.response?.status_details,
+                    responseStatus: event.response?.status,
+                    conversationId: (event.response as any)?.conversation_id,
+                    model: (event.response as any)?.model,
                     // For transcription events, add transcript length info
                     transcriptLength: event.transcript ? event.transcript.length : undefined,
                     hasTranscript: !!event.transcript,
