@@ -8,6 +8,8 @@ import { useTranscript } from "@/app/contexts/TranscriptContext"
 
 const DEFAULT_AGENT_ID = "elastic-ai-agent"
 const MIRROR_REQUEST_TIMEOUT_MS = 125_000
+const MIRROR_MAX_CONSECUTIVE_FAILURES = 5
+const MIRROR_CIRCUIT_OPEN_MS = 60_000
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms))
@@ -18,10 +20,28 @@ export function useAgentBuilderMirror() {
     const { addTranscriptBreadcrumb } = useTranscript()
 
     const conversationIdsByAgentRef = useRef<Record<string, string>>({})
+    const consecutiveFailuresRef = useRef(0)
+    const circuitOpenUntilRef = useRef<number | null>(null)
 
     const mirrorTurn = async (request: MirrorTurnRequest): Promise<MirrorTurnResult> => {
         const text = request.text?.trim() ?? ""
         const selectedRealtimeAgentName = request.selectedRealtimeAgentName?.trim() || "unknown"
+
+        const now = Date.now()
+        const circuitOpenUntil = circuitOpenUntilRef.current
+        if (circuitOpenUntil && now < circuitOpenUntil) {
+            const skippedResult: MirrorTurnResult = {
+                success: true,
+                status: "skipped",
+                conversationId: request.conversationId ?? null,
+                agentId: DEFAULT_AGENT_ID,
+                mappedFromRealtimeAgent: selectedRealtimeAgentName,
+                reason: `Mirror circuit open until ${new Date(circuitOpenUntil).toISOString()}`,
+            }
+
+            addTranscriptBreadcrumb("Mirror skipped (circuit open)", skippedResult, "agent_builder_mirror")
+            return skippedResult
+        }
 
         if (!text) {
             const emptyResult: MirrorTurnResult = {
@@ -38,8 +58,8 @@ export function useAgentBuilderMirror() {
         }
 
         const agentKey = selectedRealtimeAgentName
-        const knownConversationId =
-            request.conversationId || conversationIdsByAgentRef.current[agentKey] || conversationIdsByAgentRef.current.default || null
+        // Do not use a cross-agent "default" conversation id fallback; that leaks context between agents.
+        const knownConversationId = request.conversationId || conversationIdsByAgentRef.current[agentKey] || null
 
         if (request.role === "assistant" && !knownConversationId) {
             const skippedResult: MirrorTurnResult = {
@@ -73,7 +93,7 @@ export function useAgentBuilderMirror() {
             "agent_builder_mirror",
         )
 
-        const attemptMirror = async (): Promise<MirrorTurnResult> => {
+        const attemptMirror = async (): Promise<{ result: MirrorTurnResult; retryable: boolean }> => {
             const abortController = new AbortController()
             const timeoutId = window.setTimeout(() => abortController.abort(), MIRROR_REQUEST_TIMEOUT_MS)
 
@@ -93,69 +113,92 @@ export function useAgentBuilderMirror() {
                     const reason =
                         typeof payload?.error === "string" ? payload.error : `Mirror API returned HTTP ${response.status}`
 
+                    const isRetryableStatus = response.status >= 500 || response.status === 408 || response.status === 429
                     return {
-                        success: false,
-                        status: "failed",
-                        conversationId: knownConversationId,
-                        agentId: typeof payload?.agentId === "string" ? payload.agentId : DEFAULT_AGENT_ID,
-                        mappedFromRealtimeAgent: selectedRealtimeAgentName,
-                        reason,
+                        result: {
+                            success: false,
+                            status: "failed",
+                            conversationId: knownConversationId,
+                            agentId: typeof payload?.agentId === "string" ? payload.agentId : DEFAULT_AGENT_ID,
+                            mappedFromRealtimeAgent: selectedRealtimeAgentName,
+                            reason,
+                        },
+                        retryable: isRetryableStatus,
                     }
                 }
 
                 return {
-                    success: Boolean(payload?.success),
-                    status:
-                        payload?.status === "mirrored" || payload?.status === "skipped" || payload?.status === "failed"
-                            ? payload.status
-                            : "failed",
-                    conversationId: typeof payload?.conversationId === "string" ? payload.conversationId : knownConversationId,
-                    agentId: typeof payload?.agentId === "string" ? payload.agentId : DEFAULT_AGENT_ID,
-                    mappedFromRealtimeAgent:
-                        typeof payload?.mappedFromRealtimeAgent === "string"
-                            ? payload.mappedFromRealtimeAgent
-                            : selectedRealtimeAgentName,
-                    reason: typeof payload?.reason === "string" ? payload.reason : undefined,
+                    result: {
+                        success: Boolean(payload?.success),
+                        status:
+                            payload?.status === "mirrored" || payload?.status === "skipped" || payload?.status === "failed"
+                                ? payload.status
+                                : "failed",
+                        conversationId: typeof payload?.conversationId === "string" ? payload.conversationId : knownConversationId,
+                        agentId: typeof payload?.agentId === "string" ? payload.agentId : DEFAULT_AGENT_ID,
+                        mappedFromRealtimeAgent:
+                            typeof payload?.mappedFromRealtimeAgent === "string"
+                                ? payload.mappedFromRealtimeAgent
+                                : selectedRealtimeAgentName,
+                        reason: typeof payload?.reason === "string" ? payload.reason : undefined,
+                    },
+                    retryable: false,
                 }
             } catch (error) {
                 const isAbort = error instanceof Error && error.name === "AbortError"
                 if (isAbort) {
                     return {
-                        success: true,
-                        status: "skipped",
-                        conversationId: knownConversationId,
-                        agentId: DEFAULT_AGENT_ID,
-                        mappedFromRealtimeAgent: selectedRealtimeAgentName,
-                        reason: "Mirror request timed out before Agent Builder completed.",
+                        result: {
+                            success: true,
+                            status: "skipped",
+                            conversationId: knownConversationId,
+                            agentId: DEFAULT_AGENT_ID,
+                            mappedFromRealtimeAgent: selectedRealtimeAgentName,
+                            reason: "Mirror request timed out before Agent Builder completed.",
+                        },
+                        retryable: false,
                     }
                 }
 
                 const reason = error instanceof Error ? error.message : "Mirror API request failed"
                 return {
-                    success: false,
-                    status: "failed",
-                    conversationId: knownConversationId,
-                    agentId: DEFAULT_AGENT_ID,
-                    mappedFromRealtimeAgent: selectedRealtimeAgentName,
-                    reason,
+                    result: {
+                        success: false,
+                        status: "failed",
+                        conversationId: knownConversationId,
+                        agentId: DEFAULT_AGENT_ID,
+                        mappedFromRealtimeAgent: selectedRealtimeAgentName,
+                        reason,
+                    },
+                    retryable: true,
                 }
             } finally {
                 window.clearTimeout(timeoutId)
             }
         }
 
-        let result = await attemptMirror()
+        const attempt = await attemptMirror()
+        let result = attempt.result
+        const initialRetryable = attempt.retryable
 
-        if (!result.success) {
-            await sleep(250)
-            result = await attemptMirror()
+        if (!result.success && initialRetryable) {
+            await sleep(500)
+            ;({ result } = await attemptMirror())
+        }
+
+        if (result.success) {
+            consecutiveFailuresRef.current = 0
+            circuitOpenUntilRef.current = null
+        } else if (result.status === "failed") {
+            consecutiveFailuresRef.current += 1
+            if (consecutiveFailuresRef.current >= MIRROR_MAX_CONSECUTIVE_FAILURES) {
+                circuitOpenUntilRef.current = Date.now() + MIRROR_CIRCUIT_OPEN_MS
+                consecutiveFailuresRef.current = 0
+            }
         }
 
         if (result.conversationId) {
             conversationIdsByAgentRef.current[agentKey] = result.conversationId
-            if (!conversationIdsByAgentRef.current.default) {
-                conversationIdsByAgentRef.current.default = result.conversationId
-            }
         }
 
         logServerEvent(
@@ -182,8 +225,7 @@ export function useAgentBuilderMirror() {
             "agent_builder_mirror",
         )
 
-        const persistConversationId =
-            result.conversationId || conversationIdsByAgentRef.current[agentKey] || `mirror-${selectedRealtimeAgentName}`
+        const persistConversationId = result.conversationId || `mirror-${selectedRealtimeAgentName}`
         const roundId = uuidv4()
 
         try {
@@ -240,3 +282,4 @@ export function useAgentBuilderMirror() {
         mirrorTurn,
     }
 }
+

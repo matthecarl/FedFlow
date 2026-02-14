@@ -704,7 +704,8 @@ export function useHandleServerEvent({
 
             // Record token usage if available
             if (event.response.usage) {
-                recordTokenUsage(event.response.usage as any, (event.response as any).model)
+                const modelOrVoice = (event.response as any).model ?? (event.response as any).voice
+                recordTokenUsage(event.response.usage as any, modelOrVoice)
             }
 
             // Record the full transcript for completed responses

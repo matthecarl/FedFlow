@@ -52,6 +52,7 @@ export function useRealtimeConnection({
         message: (e: MessageEvent) => void
     } | null>(null)
     const agentBuilderConversationIdRef = useRef<string | null>(null)
+    const agentBuilderConversationIdsByAgentRef = useRef<Record<string, string>>({})
 
     const { addTranscriptMessage, addTranscriptBreadcrumb, updateTranscriptMessage, updateTranscriptItemStatus, transcriptItems } =
         useTranscript()
@@ -59,6 +60,16 @@ export function useRealtimeConnection({
     const { mirrorTurn } = useAgentBuilderMirror()
     const isRealtimeVoiceMode = conversationMode === "realtime_voice_mirror"
 
+    // Prevent cross-agent context leakage in Agent Builder text mode by keying conversation IDs per selected agent.
+    useEffect(() => {
+        const key = selectedAgentName?.trim()
+        if (!key) {
+            agentBuilderConversationIdRef.current = null
+            return
+        }
+
+        agentBuilderConversationIdRef.current = agentBuilderConversationIdsByAgentRef.current[key] ?? null
+    }, [selectedAgentName])
     const extractConversationIdFromSsePayload = (payload: unknown): string | null => {
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
             return null
@@ -381,6 +392,10 @@ export function useRealtimeConnection({
                 "agent_builder",
             )
 
+            const abortController = new AbortController()
+            const requestTimeoutMs = 120_000
+            const requestTimeoutId = window.setTimeout(() => abortController.abort(), requestTimeoutMs)
+
             const response = await fetch("/api/agent-builder/chat", {
                 method: "POST",
                 headers: {
@@ -391,6 +406,7 @@ export function useRealtimeConnection({
                     conversationId: agentBuilderConversationIdRef.current,
                     selectedRealtimeAgentName: selectedAgentName,
                 }),
+                signal: abortController.signal,
             })
 
             if (!response.ok) {
@@ -405,48 +421,69 @@ export function useRealtimeConnection({
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             let buffer = ""
+            let shouldStop = false
 
-            while (true) {
-                const { done, value } = await reader.read()
-                if (done) {
-                    break
-                }
-                if (!value) {
-                    continue
-                }
-
-                buffer += decoder.decode(value, { stream: true })
-                const { frames, remaining } = splitSseFrames(buffer)
-                buffer = remaining
-
-                for (const frame of frames) {
-                    const parsed = parseSseFrame(frame)
-                    if (!parsed) {
+            try {
+                while (true) {
+                    const { done, value } = await reader.read()
+                    if (done) {
+                        break
+                    }
+                    if (!value) {
                         continue
                     }
 
-                    const payload = safeParseSseData(parsed.data)
-                    const conversationId = extractConversationIdFromSsePayload(payload)
-                    if (conversationId) {
-                        agentBuilderConversationIdRef.current = conversationId
-                    }
+                    buffer += decoder.decode(value, { stream: true })
+                    const { frames, remaining } = splitSseFrames(buffer)
+                    buffer = remaining
 
-                    if (parsed.event === "message_chunk" || parsed.event === "message_complete") {
-                        const content = extractMessageTextFromSsePayload(payload)
-                        if (content && content.length > 0) {
-                            if (!assistantMessageId) {
-                                assistantMessageId = uuidv4()
-                                addTranscriptMessage(assistantMessageId, "assistant", "", false, "agent_builder")
-                            }
+                    for (const frame of frames) {
+                        const parsed = parseSseFrame(frame)
+                        if (!parsed) {
+                            continue
+                        }
 
-                            if (parsed.event === "message_chunk") {
-                                finalAssistantText += content
-                                updateTranscriptMessage(assistantMessageId, content, true)
-                            } else {
-                                finalAssistantText = content
-                                updateTranscriptMessage(assistantMessageId, content, false)
+                        const payload = safeParseSseData(parsed.data)
+                        const conversationId = extractConversationIdFromSsePayload(payload)
+                        if (conversationId) {
+                            agentBuilderConversationIdRef.current = conversationId
+                            if (selectedAgentName?.trim()) {
+                                agentBuilderConversationIdsByAgentRef.current[selectedAgentName.trim()] = conversationId
                             }
                         }
+
+                        if (parsed.event === "message_chunk" || parsed.event === "message_complete") {
+                            const content = extractMessageTextFromSsePayload(payload)
+                            if (content && content.length > 0) {
+                                if (!assistantMessageId) {
+                                    assistantMessageId = uuidv4()
+                                    addTranscriptMessage(assistantMessageId, "assistant", "", false, "agent_builder")
+                                }
+
+                                if (parsed.event === "message_chunk") {
+                                    finalAssistantText += content
+                                    updateTranscriptMessage(assistantMessageId, content, true)
+                                } else {
+                                    finalAssistantText = content
+                                    updateTranscriptMessage(assistantMessageId, content, false)
+                                    // Terminal event; don't block UI waiting for the upstream stream to close.
+                                    shouldStop = true
+                                }
+                            }
+                        }
+                    }
+
+                    if (shouldStop) {
+                        break
+                    }
+                }
+            } finally {
+                window.clearTimeout(requestTimeoutId)
+                if (shouldStop) {
+                    try {
+                        await reader.cancel()
+                    } catch {
+                        // ignore
                     }
                 }
             }

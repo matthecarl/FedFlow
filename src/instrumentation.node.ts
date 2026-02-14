@@ -77,7 +77,11 @@ if (!runtimeState.started) {
     runtimeState.metricReader = metricReader
     runtimeState.started = true
 
-    void sdk.start()
+    try {
+        sdk.start()
+    } catch (error) {
+        console.error("Failed to start OTel SDK:", error)
+    }
     debugLog("OpenTelemetry NodeSDK initialized")
 }
 

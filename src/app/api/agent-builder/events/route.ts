@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { Client } from "@elastic/elasticsearch"
 import { SpanKind, SpanStatusCode, trace } from "@opentelemetry/api"
+import { asOptionalNonEmptyString } from "@/app/lib/agent-builder-kibana"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -33,12 +34,7 @@ interface EventRecordInput {
 }
 
 function asOptionalString(value: unknown): string | undefined {
-    if (typeof value !== "string") {
-        return undefined
-    }
-
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : undefined
+    return asOptionalNonEmptyString(value)
 }
 
 function asRequiredString(value: unknown): string | null {
@@ -245,60 +241,60 @@ export async function POST(req: NextRequest) {
 
             operations.push({
                 "@timestamp": normalizedTimestamp,
-                app: "openai-realtime-agents",
-                channel: "agent_builder_chat",
+                app: "realtime-elastic",
+                channel: "agent_builder_mirror",
                 agent_id: agentId,
                 conversation_id: conversationId,
                 round_id: roundId,
                 sequence,
                 event_type: event.eventType,
-                role: event.role,
-                status: event.status,
-                tool_name: event.toolName,
-                source_backend: event.sourceBackend,
-                mirror_status: event.mirrorStatus,
-                mapped_agent_id: event.mappedAgentId,
-                realtime_agent_name: event.realtimeAgentName,
-                content: event.content,
-                content_length: event.content?.length ?? 0,
-                latency_ms: event.latencyMs,
+                ...(event.role ? { role: event.role } : {}),
+                ...(event.status ? { status: event.status } : {}),
+                ...(event.toolName ? { tool_name: event.toolName } : {}),
+                ...(event.sourceBackend ? { source_backend: event.sourceBackend } : {}),
+                ...(event.mirrorStatus ? { mirror_status: event.mirrorStatus } : {}),
+                ...(event.mappedAgentId ? { mapped_agent_id: event.mappedAgentId } : {}),
+                ...(event.realtimeAgentName ? { realtime_agent_name: event.realtimeAgentName } : {}),
+                ...(event.content ? { content: event.content } : {}),
+                ...(event.content ? { content_length: event.content.length } : {}),
+                ...(typeof event.latencyMs === "number" ? { latency_ms: event.latencyMs } : {}),
                 raw: event.raw,
             })
         })
 
         const bulkResponse = await client.bulk({
-            refresh: false,
             operations,
+            refresh: true,
         })
 
-        const hasErrors =
-            typeof (bulkResponse as { errors?: boolean }).errors === "boolean"
-                ? Boolean((bulkResponse as { errors?: boolean }).errors)
-                : Boolean((bulkResponse as { body?: { errors?: boolean } }).body?.errors)
+        const items = (bulkResponse as any).items as any[] | undefined
+        const errors = Boolean((bulkResponse as any).errors)
 
-        const items =
-            (bulkResponse as { items?: Array<Record<string, { error?: unknown }>> }).items ||
-            (bulkResponse as { body?: { items?: Array<Record<string, { error?: unknown }>> } }).body?.items ||
-            []
-
-        const failed = hasErrors
-            ? items.reduce((count, item) => {
-                  const action = Object.values(item)[0]
-                  return action?.error ? count + 1 : count
-              }, 0)
-            : 0
+        let failed = 0
+        if (errors && Array.isArray(items)) {
+            for (const item of items) {
+                const entry = item?.index
+                if (entry?.error) {
+                    failed += 1
+                }
+            }
+        }
 
         const accepted = normalizedEvents.length - failed
 
         span.setAttribute("gen_ai.event.count", normalizedEvents.length)
-        span.setAttribute("gen_ai.event.accepted", accepted)
         span.setAttribute("gen_ai.event.failed", failed)
+        span.setAttribute("gen_ai.event.accepted", accepted)
         span.setAttribute("gen_ai.conversation.id", conversationId)
         span.setAttribute("gen_ai.agent.id", agentId)
 
-        span.setStatus({ code: failed > 0 ? SpanStatusCode.ERROR : SpanStatusCode.OK })
-        span.end()
+        if (failed > 0) {
+            span.setStatus({ code: SpanStatusCode.ERROR, message: "Some events failed to index" })
+        } else {
+            span.setStatus({ code: SpanStatusCode.OK })
+        }
 
+        span.end()
         return NextResponse.json({ accepted, failed })
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to persist Agent Builder events"
@@ -310,3 +306,4 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: message }, { status: 500 })
     }
 }
+

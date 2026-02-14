@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import { SpanKind, SpanStatusCode, trace } from "@opentelemetry/api"
 import { parseSseFrame, safeParseSseData, splitSseFrames } from "@/app/lib/agent-builder-sse"
+import {
+    asOptionalNonEmptyString,
+    resolveAuthorizationHeader as resolveAuthorizationHeaderShared,
+    resolveConverseUrl as resolveConverseUrlShared,
+    resolveMappedAgentId as resolveMappedAgentIdShared,
+} from "@/app/lib/agent-builder-kibana"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -21,125 +27,19 @@ interface MirrorRouteBody {
 }
 
 function asOptionalString(value: unknown): string | undefined {
-    if (typeof value !== "string") {
-        return undefined
-    }
-
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : undefined
+    return asOptionalNonEmptyString(value)
 }
 
 function resolveAuthorizationHeader(): string {
-    const apiKey = process.env.KIBANA_API_KEY?.trim()
-    if (apiKey) {
-        return apiKey.startsWith("ApiKey ") ? apiKey : `ApiKey ${apiKey}`
-    }
-
-    const fallbackApiKey = process.env.ELASTICSEARCH_LOGSAI_API_KEY?.trim() || process.env.ELASTICSEARCH_CAPSTONE_API_KEY?.trim()
-    if (fallbackApiKey) {
-        return fallbackApiKey.startsWith("ApiKey ") ? fallbackApiKey : `ApiKey ${fallbackApiKey}`
-    }
-
-    const username = process.env.KIBANA_USERNAME?.trim()
-    const password = process.env.KIBANA_PASSWORD?.trim()
-
-    if (username && password) {
-        const encodedCredentials = Buffer.from(`${username}:${password}`).toString("base64")
-        return `Basic ${encodedCredentials}`
-    }
-
-    throw new Error("Kibana authentication is not configured. Set KIBANA_API_KEY or KIBANA_USERNAME/KIBANA_PASSWORD.")
-}
-
-function deriveKibanaUrlFromElasticsearchUrl(): string | null {
-    const elasticsearchUrl = process.env.ELASTICSEARCH_CAPSTONE_URL?.trim()
-    if (!elasticsearchUrl) {
-        return null
-    }
-
-    try {
-        const parsedUrl = new URL(elasticsearchUrl)
-        if (!parsedUrl.hostname.includes(".es.")) {
-            return null
-        }
-
-        parsedUrl.hostname = parsedUrl.hostname.replace(".es.", ".kb.")
-        return parsedUrl.origin
-    } catch {
-        return null
-    }
+    return resolveAuthorizationHeaderShared()
 }
 
 function resolveConverseUrl(): string {
-    const kibanaUrl = process.env.KIBANA_URL?.trim() || deriveKibanaUrlFromElasticsearchUrl()
-    if (!kibanaUrl) {
-        throw new Error(
-            "Kibana URL is not configured. Set KIBANA_URL, or ELASTICSEARCH_CAPSTONE_URL with an .es. hostname for auto-derivation.",
-        )
-    }
-
-    const normalizedBaseUrl = kibanaUrl.replace(/\/+$/, "")
-    const spaceId = process.env.KIBANA_SPACE_ID?.trim()
-
-    if (spaceId) {
-        return `${normalizedBaseUrl}/s/${spaceId}/api/agent_builder/converse/async`
-    }
-
-    return `${normalizedBaseUrl}/api/agent_builder/converse/async`
+    return resolveConverseUrlShared()
 }
 
 function resolveMappedAgentId(realtimeAgentName?: string): { mappedAgentId: string; mappedFromRealtimeAgent?: string } {
-    const defaultAgentId = process.env.AGENT_BUILDER_AGENT_ID?.trim() || DEFAULT_AGENT_ID
-
-    if (!realtimeAgentName) {
-        return { mappedAgentId: defaultAgentId }
-    }
-
-    const mapString = process.env.AGENT_BUILDER_AGENT_MAP_JSON?.trim()
-    if (!mapString) {
-        return {
-            mappedAgentId: defaultAgentId,
-            mappedFromRealtimeAgent: realtimeAgentName,
-        }
-    }
-
-    try {
-        const parsedMap = JSON.parse(mapString)
-        if (!parsedMap || typeof parsedMap !== "object" || Array.isArray(parsedMap)) {
-            return {
-                mappedAgentId: defaultAgentId,
-                mappedFromRealtimeAgent: realtimeAgentName,
-            }
-        }
-
-        const directMatch = (parsedMap as Record<string, unknown>)[realtimeAgentName]
-        if (typeof directMatch === "string" && directMatch.trim().length > 0) {
-            return {
-                mappedAgentId: directMatch.trim(),
-                mappedFromRealtimeAgent: realtimeAgentName,
-            }
-        }
-
-        const lowerRealtimeAgentName = realtimeAgentName.toLowerCase()
-        for (const [mapKey, mapValue] of Object.entries(parsedMap as Record<string, unknown>)) {
-            if (mapKey.toLowerCase() === lowerRealtimeAgentName && typeof mapValue === "string" && mapValue.trim()) {
-                return {
-                    mappedAgentId: mapValue.trim(),
-                    mappedFromRealtimeAgent: realtimeAgentName,
-                }
-            }
-        }
-
-        return {
-            mappedAgentId: defaultAgentId,
-            mappedFromRealtimeAgent: realtimeAgentName,
-        }
-    } catch {
-        return {
-            mappedAgentId: defaultAgentId,
-            mappedFromRealtimeAgent: realtimeAgentName,
-        }
-    }
+    return resolveMappedAgentIdShared(realtimeAgentName)
 }
 
 function extractConversationId(payload: unknown): string | null {
@@ -303,21 +203,26 @@ export async function POST(req: NextRequest) {
         const abortController = new AbortController()
         const timeoutId = setTimeout(() => abortController.abort(), MIRROR_CONVERSE_TIMEOUT_MS)
 
-        const response = await fetch(converseUrl, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "kbn-xsrf": "true",
-                Authorization: authorization,
-            },
-            body: JSON.stringify({
-                input: text,
-                agent_id: mappedAgentId,
-                ...(conversationId ? { conversation_id: conversationId } : {}),
-            }),
-            cache: "no-store",
-            signal: abortController.signal,
-        }).finally(() => clearTimeout(timeoutId))
+        let response: Response
+        try {
+            response = await fetch(converseUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "kbn-xsrf": "true",
+                    Authorization: authorization,
+                },
+                body: JSON.stringify({
+                    input: text,
+                    agent_id: mappedAgentId,
+                    ...(conversationId ? { conversation_id: conversationId } : {}),
+                }),
+                cache: "no-store",
+                signal: abortController.signal,
+            })
+        } finally {
+            // Do not clear the timeout here; we want it to cover the entire SSE read as well.
+        }
 
         span.setAttribute("http.status_code", response.status)
 
@@ -343,10 +248,14 @@ export async function POST(req: NextRequest) {
 
         let mirroredConversationId = conversationId || null
         let persisted = false
-        if (response.body) {
-            const sseResult = await readConversationResultFromSse(response.body)
-            mirroredConversationId = sseResult.conversationId || mirroredConversationId
-            persisted = sseResult.persisted
+        try {
+            if (response.body) {
+                const sseResult = await readConversationResultFromSse(response.body)
+                mirroredConversationId = sseResult.conversationId || mirroredConversationId
+                persisted = sseResult.persisted
+            }
+        } finally {
+            clearTimeout(timeoutId)
         }
 
         span.setStatus({ code: SpanStatusCode.OK })
@@ -395,3 +304,4 @@ export async function POST(req: NextRequest) {
         )
     }
 }
+

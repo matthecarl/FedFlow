@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { Span, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api"
+import {
+    asNonEmptyStringOrNull,
+    resolveAuthorizationHeader,
+    resolveConverseUrl,
+    resolveMappedAgentId,
+} from "@/app/lib/agent-builder-kibana"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -12,125 +18,6 @@ interface ChatRouteRequestBody {
     conversationId?: unknown
     conversation_id?: unknown
     selectedRealtimeAgentName?: unknown
-}
-
-function asNonEmptyString(value: unknown): string | null {
-    if (typeof value !== "string") {
-        return null
-    }
-
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : null
-}
-
-function resolveAuthorizationHeader(): string {
-    const apiKey = process.env.KIBANA_API_KEY?.trim()
-    if (apiKey) {
-        return apiKey.startsWith("ApiKey ") ? apiKey : `ApiKey ${apiKey}`
-    }
-
-    const legacyApiKey = process.env.ELASTICSEARCH_LOGSAI_API_KEY?.trim() || process.env.ELASTICSEARCH_CAPSTONE_API_KEY?.trim()
-    if (legacyApiKey) {
-        return legacyApiKey.startsWith("ApiKey ") ? legacyApiKey : `ApiKey ${legacyApiKey}`
-    }
-
-    const username = process.env.KIBANA_USERNAME?.trim()
-    const password = process.env.KIBANA_PASSWORD?.trim()
-
-    if (username && password) {
-        const encodedCredentials = Buffer.from(`${username}:${password}`).toString("base64")
-        return `Basic ${encodedCredentials}`
-    }
-
-    throw new Error("Kibana authentication is not configured. Set KIBANA_API_KEY or KIBANA_USERNAME/KIBANA_PASSWORD.")
-}
-
-function deriveKibanaUrlFromElasticsearchUrl(): string | null {
-    const elasticsearchUrl = process.env.ELASTICSEARCH_CAPSTONE_URL?.trim()
-    if (!elasticsearchUrl) {
-        return null
-    }
-
-    try {
-        const parsedUrl = new URL(elasticsearchUrl)
-        if (!parsedUrl.hostname.includes(".es.")) {
-            return null
-        }
-
-        parsedUrl.hostname = parsedUrl.hostname.replace(".es.", ".kb.")
-        return parsedUrl.origin
-    } catch {
-        return null
-    }
-}
-
-function resolveConverseUrl(): string {
-    const kibanaUrl = process.env.KIBANA_URL?.trim() || deriveKibanaUrlFromElasticsearchUrl()
-    if (!kibanaUrl) {
-        throw new Error(
-            "Kibana URL is not configured. Set KIBANA_URL, or ELASTICSEARCH_CAPSTONE_URL with an .es. hostname for auto-derivation.",
-        )
-    }
-
-    const normalizedBaseUrl = kibanaUrl.replace(/\/+$/, "")
-    const spaceId = process.env.KIBANA_SPACE_ID?.trim()
-
-    if (spaceId) {
-        return `${normalizedBaseUrl}/s/${spaceId}/api/agent_builder/converse/async`
-    }
-
-    return `${normalizedBaseUrl}/api/agent_builder/converse/async`
-}
-
-function resolveMappedAgentId(realtimeAgentName?: string): { mappedAgentId: string; mappedFromRealtimeAgent?: string } {
-    const defaultAgentId = process.env.AGENT_BUILDER_AGENT_ID?.trim() || "elastic-ai-agent"
-
-    if (!realtimeAgentName) {
-        return { mappedAgentId: defaultAgentId }
-    }
-
-    const mapString = process.env.AGENT_BUILDER_AGENT_MAP_JSON?.trim()
-    if (!mapString) {
-        return {
-            mappedAgentId: defaultAgentId,
-            mappedFromRealtimeAgent: realtimeAgentName,
-        }
-    }
-
-    try {
-        const parsedMap = JSON.parse(mapString)
-        if (!parsedMap || typeof parsedMap !== "object" || Array.isArray(parsedMap)) {
-            return {
-                mappedAgentId: defaultAgentId,
-                mappedFromRealtimeAgent: realtimeAgentName,
-            }
-        }
-
-        const directMatch = (parsedMap as Record<string, unknown>)[realtimeAgentName]
-        if (typeof directMatch === "string" && directMatch.trim().length > 0) {
-            return {
-                mappedAgentId: directMatch.trim(),
-                mappedFromRealtimeAgent: realtimeAgentName,
-            }
-        }
-
-        const normalizedName = realtimeAgentName.toLowerCase()
-        for (const [mapKey, mapValue] of Object.entries(parsedMap as Record<string, unknown>)) {
-            if (mapKey.toLowerCase() === normalizedName && typeof mapValue === "string" && mapValue.trim()) {
-                return {
-                    mappedAgentId: mapValue.trim(),
-                    mappedFromRealtimeAgent: realtimeAgentName,
-                }
-            }
-        }
-    } catch {
-        // Fall through to default agent id.
-    }
-
-    return {
-        mappedAgentId: defaultAgentId,
-        mappedFromRealtimeAgent: realtimeAgentName,
-    }
 }
 
 function endSpan(span: Span, statusCode: SpanStatusCode, statusMessage?: string, error?: unknown) {
@@ -149,6 +36,7 @@ function endSpan(span: Span, statusCode: SpanStatusCode, statusMessage?: string,
 function createInstrumentedSseStream(upstreamBody: ReadableStream<Uint8Array>, span: Span): ReadableStream<Uint8Array> {
     let bytesTransferred = 0
     let hasEnded = false
+    let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
     const endSpanOnce = (statusCode: SpanStatusCode, statusMessage?: string, error?: unknown) => {
         if (hasEnded) {
@@ -162,11 +50,11 @@ function createInstrumentedSseStream(upstreamBody: ReadableStream<Uint8Array>, s
 
     return new ReadableStream<Uint8Array>({
         async start(controller) {
-            const reader = upstreamBody.getReader()
+            upstreamReader = upstreamBody.getReader()
 
             try {
                 while (true) {
-                    const { done, value } = await reader.read()
+                    const { done, value } = await upstreamReader.read()
                     if (done) {
                         break
                     }
@@ -188,6 +76,13 @@ function createInstrumentedSseStream(upstreamBody: ReadableStream<Uint8Array>, s
                     streamError instanceof Error ? streamError.message : "Agent Builder stream forwarding failed",
                     streamError,
                 )
+            } finally {
+                try {
+                    upstreamReader?.releaseLock()
+                } catch {
+                    // ignore
+                }
+                upstreamReader = null
             }
         },
         cancel(reason) {
@@ -195,6 +90,14 @@ function createInstrumentedSseStream(upstreamBody: ReadableStream<Uint8Array>, s
             if (reason) {
                 span.setAttribute("agent_builder.stream.cancel_reason", String(reason))
             }
+
+            // Stop upstream work if the downstream client disconnects early.
+            try {
+                void upstreamReader?.cancel()
+            } catch {
+                // ignore
+            }
+
             endSpanOnce(SpanStatusCode.OK, "Client cancelled stream")
         },
     })
@@ -213,9 +116,9 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = (await req.json()) as ChatRouteRequestBody
-        const input = asNonEmptyString(body.input)
-        const conversationId = asNonEmptyString(body.conversationId) || asNonEmptyString(body.conversation_id)
-        const selectedRealtimeAgentName = asNonEmptyString(body.selectedRealtimeAgentName)
+        const input = asNonEmptyStringOrNull(body.input)
+        const conversationId = asNonEmptyStringOrNull(body.conversationId) || asNonEmptyStringOrNull(body.conversation_id)
+        const selectedRealtimeAgentName = asNonEmptyStringOrNull(body.selectedRealtimeAgentName)
 
         if (!input) {
             endSpan(span, SpanStatusCode.ERROR, "Missing input")
@@ -224,12 +127,7 @@ export async function POST(req: NextRequest) {
 
         if (input.length > MAX_INPUT_LENGTH) {
             endSpan(span, SpanStatusCode.ERROR, "Input too large")
-            return NextResponse.json(
-                { error: `Input exceeds ${MAX_INPUT_LENGTH} characters.` },
-                {
-                    status: 400,
-                },
-            )
+            return NextResponse.json({ error: `Input exceeds ${MAX_INPUT_LENGTH} characters.` }, { status: 400 })
         }
 
         const converseUrl = resolveConverseUrl()
@@ -264,11 +162,7 @@ export async function POST(req: NextRequest) {
 
         if (!upstreamResponse.ok) {
             const responseText = await upstreamResponse.text()
-            endSpan(
-                span,
-                SpanStatusCode.ERROR,
-                `Kibana request failed with status ${upstreamResponse.status}: ${responseText}`,
-            )
+            endSpan(span, SpanStatusCode.ERROR, `Kibana request failed with status ${upstreamResponse.status}: ${responseText}`)
 
             return NextResponse.json(
                 {
@@ -276,9 +170,7 @@ export async function POST(req: NextRequest) {
                     status: upstreamResponse.status,
                     details: responseText,
                 },
-                {
-                    status: upstreamResponse.status,
-                },
+                { status: upstreamResponse.status },
             )
         }
 
@@ -305,3 +197,4 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: errorMessage }, { status: 500 })
     }
 }
+
