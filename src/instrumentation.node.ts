@@ -18,7 +18,6 @@ type OtelRuntimeState = {
 const OTEL_STATE_KEY = "__realtimeOtelRuntimeState"
 
 declare global {
-    // eslint-disable-next-line no-var
     var __realtimeOtelRuntimeState: OtelRuntimeState | undefined
 }
 

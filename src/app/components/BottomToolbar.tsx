@@ -16,6 +16,39 @@ interface BottomToolbarProps {
     setIsAudioPlaybackEnabled: (val: boolean) => void
 }
 
+function Switch({
+    id,
+    label,
+    checked,
+    onChange,
+    disabled,
+}: {
+    id: string
+    label: string
+    checked: boolean
+    onChange: (val: boolean) => void
+    disabled?: boolean
+}) {
+    return (
+        <label
+            className={`inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700 ${
+                disabled ? "opacity-60 cursor-not-allowed" : ""
+            }`}
+        >
+            <input
+                id={id}
+                type="checkbox"
+                checked={checked}
+                onChange={(e) => onChange(e.target.checked)}
+                disabled={disabled}
+                className="peer sr-only"
+            />
+            <span className="switch-track" aria-hidden="true" />
+            <span className="select-none">{label}</span>
+        </label>
+    )
+}
+
 function BottomToolbar({
     conversationMode,
     sessionStatus,
@@ -35,98 +68,95 @@ function BottomToolbar({
     const isConnecting = sessionStatus === "CONNECTING"
     const isVoiceControlsDisabled = !isRealtimeVoiceMode
 
-    function getConnectionButtonLabel() {
-        if (!isRealtimeVoiceMode) return "Text mode active"
-        if (isConnected) return "Disconnect"
-        if (isConnecting) return "Connecting..."
-        return "Connect"
-    }
+    const connectionLabel = !isRealtimeVoiceMode
+        ? "Text mode active"
+        : isConnected
+          ? "Disconnect"
+          : isConnecting
+            ? "Connecting..."
+            : "Connect"
 
-    function getConnectionButtonClasses() {
-        const baseClasses = "text-white text-base p-2 w-36 rounded w-full sm:w-36"
-        if (!isRealtimeVoiceMode) {
-            return `bg-gray-500 cursor-not-allowed ${baseClasses}`
-        }
-        const cursorClass = isConnecting ? "cursor-not-allowed" : "cursor-pointer"
+    const connectionClasses = !isRealtimeVoiceMode
+        ? "btn btn-soft"
+        : isConnected
+          ? "btn btn-danger"
+          : isConnecting
+            ? "btn btn-neutral"
+            : "btn btn-primary"
 
-        if (isConnected) {
-            // Connected -> label "Disconnect" -> red
-            return `bg-blue hover:bg-primary ${cursorClass} ${baseClasses}`
-        }
-        // Disconnected or connecting -> label is either "Connect" or "Connecting" -> black
-        return `bg-black hover:bg-gray-900 ${cursorClass} ${baseClasses}`
-    }
+    const talkLabel = !isPTTActive ? "Talk" : isPTTUserSpeaking ? "Listening..." : "Hold to talk"
 
     return (
-        <div className="p-4 flex flex-row items-center justify-center gap-x-8">
-            <div className="text-xs sm:text-sm text-gray-600 whitespace-nowrap max-w-[16rem] overflow-hidden text-ellipsis">
-                Mode:{" "}
-                {isRealtimeVoiceMode ? "Realtime voice (mirrored to Agent Builder)" : "Text via Agent Builder"}
-            </div>
-            <button
-                onClick={onToggleConnection}
-                className={getConnectionButtonClasses()}
-                disabled={isConnecting || isVoiceControlsDisabled}
-            >
-                {getConnectionButtonLabel()}
-            </button>
+        <footer className="border-t border-slate-200/70 bg-white/70 backdrop-blur">
+            <div className="app-container py-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-3">
+                        <button
+                            onClick={onToggleConnection}
+                            className={connectionClasses}
+                            disabled={isConnecting || isVoiceControlsDisabled}
+                        >
+                            {connectionLabel}
+                        </button>
+                        <div className="text-xs text-slate-600">
+                            {isRealtimeVoiceMode ? (
+                                <>
+                                    Status:{" "}
+                                    <span className="font-semibold text-slate-800">
+                                        {isConnected ? "Connected" : isConnecting ? "Connecting" : "Disconnected"}
+                                    </span>
+                                </>
+                            ) : (
+                                <span className="font-semibold text-slate-800">Voice controls disabled</span>
+                            )}
+                        </div>
+                    </div>
 
-            <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1">
-                    <input
-                        id="push-to-talk"
-                        type="checkbox"
-                        checked={isPTTActive}
-                        onChange={(e) => setIsPTTActive(e.target.checked)}
-                        disabled={!isConnected || isVoiceControlsDisabled}
-                        className="w-4 h-4 sm:w-5 sm:h-5"
-                    />
-                    <label htmlFor="push-to-talk" className="cursor-pointer text-xs sm:text-sm">
-                        Push to talk
-                    </label>
-                </div>
-                <button
-                    onMouseDown={handleTalkButtonDown}
-                    onMouseUp={handleTalkButtonUp}
-                    onTouchStart={handleTalkButtonDown}
-                    onTouchEnd={handleTalkButtonUp}
-                    disabled={!isPTTActive || isVoiceControlsDisabled}
-                    className={`py-1 px-3 rounded text-xs sm:text-sm cursor-pointer 
-            ${!isPTTActive ? "bg-gray-100 text-gray-400" : isPTTUserSpeaking ? "bg-gray-300" : "bg-gray-200"}`}
-                >
-                    Talk
-                </button>
-
-                {/* Audio Playback & Logs – grouped side by side */}
-                <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-1">
-                        <input
-                            id="audio-playback"
-                            type="checkbox"
-                            checked={isAudioPlaybackEnabled}
-                            onChange={(e) => setIsAudioPlaybackEnabled(e.target.checked)}
+                    <div className="flex flex-wrap items-center gap-3">
+                        <Switch
+                            id="push-to-talk"
+                            label="Push to talk"
+                            checked={isPTTActive}
+                            onChange={setIsPTTActive}
                             disabled={!isConnected || isVoiceControlsDisabled}
-                            className="w-4 h-4 sm:w-5 sm:h-5"
                         />
-                        <label htmlFor="audio-playback" className="cursor-pointer text-xs sm:text-sm">
-                            Audio playback
-                        </label>
+                        <button
+                            onMouseDown={handleTalkButtonDown}
+                            onMouseUp={handleTalkButtonUp}
+                            onTouchStart={handleTalkButtonDown}
+                            onTouchEnd={handleTalkButtonUp}
+                            disabled={!isPTTActive || isVoiceControlsDisabled}
+                            className={
+                                "btn " +
+                                (!isPTTActive || isVoiceControlsDisabled
+                                    ? "btn-soft"
+                                    : isPTTUserSpeaking
+                                      ? "bg-accent text-slate-900 hover:brightness-95"
+                                      : "btn-soft")
+                            }
+                        >
+                            {talkLabel}
+                        </button>
                     </div>
-                    <div className="flex items-center gap-1">
-                        <input
-                            id="logs"
-                            type="checkbox"
-                            checked={isEventsPaneExpanded}
-                            onChange={(e) => setIsEventsPaneExpanded(e.target.checked)}
-                            className="w-4 h-4 sm:w-5 sm:h-5"
+
+                    <div className="flex flex-wrap items-center gap-3">
+                        <Switch
+                            id="audio-playback"
+                            label="Audio playback"
+                            checked={isAudioPlaybackEnabled}
+                            onChange={setIsAudioPlaybackEnabled}
+                            disabled={!isConnected || isVoiceControlsDisabled}
                         />
-                        <label htmlFor="logs" className="cursor-pointer text-xs sm:text-sm">
-                            Logs
-                        </label>
+                        <Switch
+                            id="logs"
+                            label="Logs"
+                            checked={isEventsPaneExpanded}
+                            onChange={setIsEventsPaneExpanded}
+                        />
                     </div>
                 </div>
             </div>
-        </div>
+        </footer>
     )
 }
 

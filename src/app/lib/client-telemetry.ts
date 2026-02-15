@@ -68,7 +68,12 @@ async function postTelemetry(eventType: string, eventData: Record<string, unknow
 
     if (!response.ok) {
         const body = await response.text().catch(() => "")
-        throw new Error(`Telemetry endpoint returned ${response.status}: ${body || response.statusText}`)
+        // Don't throw: Next dev overlay will show this as a "Console Error" and it distracts during demos.
+        // We still log and mirror to RUM error capture so it's visible in observability tooling.
+        const err = new Error(`Telemetry endpoint returned ${response.status}: ${body || response.statusText}`)
+        console.warn(err.message)
+        captureError(normalizeError(err), { tags: { source: "client-telemetry" } })
+        return
     }
 }
 

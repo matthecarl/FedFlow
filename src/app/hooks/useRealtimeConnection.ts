@@ -113,8 +113,33 @@ export function useRealtimeConnection({
             if (typeof obj.chunk === "string") {
                 return obj.chunk
             }
+            // Kibana Agent Builder SSE uses `text_chunk` for deltas.
+            if (typeof obj.text_chunk === "string") {
+                return obj.text_chunk
+            }
             if (typeof obj.text === "string") {
                 return obj.text
+            }
+            // Some events provide the full message under `message_content`.
+            if (typeof obj.message_content === "string") {
+                return obj.message_content
+            }
+            if (Array.isArray(obj.message_content)) {
+                const joined = obj.message_content
+                    .map((item) => {
+                        if (!item || typeof item !== "object" || Array.isArray(item)) {
+                            return ""
+                        }
+                        const itemObj = item as Record<string, unknown>
+                        return typeof itemObj.text === "string"
+                            ? itemObj.text
+                            : typeof itemObj.content === "string"
+                              ? itemObj.content
+                              : ""
+                    })
+                    .filter(Boolean)
+                    .join("")
+                return joined || null
             }
             return null
         }
@@ -410,8 +435,21 @@ export function useRealtimeConnection({
             })
 
             if (!response.ok) {
-                const errorText = await response.text()
-                throw new Error(errorText || `Agent Builder request failed with status ${response.status}`)
+                const errorText = await response.text().catch(() => "")
+                let message = errorText || response.statusText || "Agent Builder request failed"
+                try {
+                    const parsed = JSON.parse(errorText)
+                    if (typeof parsed?.error === "string") {
+                        message = parsed.error
+                    } else if (typeof parsed?.details === "string") {
+                        message = parsed.details
+                    } else if (typeof parsed?.message === "string") {
+                        message = parsed.message
+                    }
+                } catch {
+                    // keep raw errorText
+                }
+                throw new Error(`${message} (HTTP ${response.status})`)
             }
 
             if (!response.body) {
@@ -452,23 +490,50 @@ export function useRealtimeConnection({
                             }
                         }
 
-                        if (parsed.event === "message_chunk" || parsed.event === "message_complete") {
-                            const content = extractMessageTextFromSsePayload(payload)
-                            if (content && content.length > 0) {
-                                if (!assistantMessageId) {
-                                    assistantMessageId = uuidv4()
-                                    addTranscriptMessage(assistantMessageId, "assistant", "", false, "agent_builder")
-                                }
+                        // Kibana Agent Builder SSE event names have varied across releases. We treat any frame
+                        // that contains message text as either a delta ("chunk") or a replacement ("message").
+                        const content = extractMessageTextFromSsePayload(payload)
+                        if (content && content.length > 0) {
+                            const payloadObj =
+                                payload && typeof payload === "object" && !Array.isArray(payload)
+                                    ? (payload as Record<string, unknown>)
+                                    : null
+                            const nestedObj =
+                                payloadObj?.data && typeof payloadObj.data === "object" && !Array.isArray(payloadObj.data)
+                                    ? (payloadObj.data as Record<string, unknown>)
+                                    : null
 
-                                if (parsed.event === "message_chunk") {
-                                    finalAssistantText += content
-                                    updateTranscriptMessage(assistantMessageId, content, true)
-                                } else {
-                                    finalAssistantText = content
-                                    updateTranscriptMessage(assistantMessageId, content, false)
-                                    // Terminal event; don't block UI waiting for the upstream stream to close.
-                                    shouldStop = true
-                                }
+                            const isDelta =
+                                parsed.event.includes("chunk") ||
+                                parsed.event.includes("delta") ||
+                                typeof payloadObj?.chunk === "string" ||
+                                typeof nestedObj?.chunk === "string" ||
+                                typeof payloadObj?.text_chunk === "string" ||
+                                typeof nestedObj?.text_chunk === "string"
+
+                            const isFinal =
+                                parsed.event.includes("complete") ||
+                                parsed.event.includes("round_complete") ||
+                                parsed.event.includes("done") ||
+                                payloadObj?.done === true ||
+                                nestedObj?.done === true
+
+                            if (!assistantMessageId) {
+                                assistantMessageId = uuidv4()
+                                addTranscriptMessage(assistantMessageId, "assistant", "", false, "agent_builder")
+                            }
+
+                            if (isDelta) {
+                                finalAssistantText += content
+                                updateTranscriptMessage(assistantMessageId, content, true)
+                            } else {
+                                finalAssistantText = content
+                                updateTranscriptMessage(assistantMessageId, content, false)
+                            }
+
+                            if (isFinal || parsed.event === "message_complete") {
+                                // Terminal event; don't block UI waiting for the upstream stream to close.
+                                shouldStop = true
                             }
                         }
                     }

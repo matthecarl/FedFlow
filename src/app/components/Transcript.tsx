@@ -1,4 +1,4 @@
-"use-client"
+"use client"
 
 import React, { useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
@@ -59,16 +59,19 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
     }
 
     return (
-        <div className="flex flex-col flex-1 bg-white min-h-0 rounded-xl">
-            <div className="relative flex-1 min-h-0">
-                <button
-                    onClick={handleCopyTranscript}
-                    className="absolute w-20 top-3 right-2 mr-1 z-10 text-sm px-3 py-2 rounded bg-blue hover:bg-primary text-white"
-                    aria-live="polite"
-                >
-                    {justCopied ? "Copied!" : "Copy"}
+        <div className="flex min-h-0 flex-col rounded-2xl border border-slate-200/80 bg-white/70 shadow-sm backdrop-blur sm:bg-white">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white/70 px-4 py-3 backdrop-blur">
+                <div className="min-w-0">
+                    <div className="text-sm font-semibold text-slate-900">Conversation</div>
+                    <div className="mt-0.5 text-xs text-slate-600">Messages and system breadcrumbs.</div>
+                </div>
+                <button onClick={handleCopyTranscript} className="btn btn-soft shrink-0" aria-live="polite">
+                    {justCopied ? "Copied" : "Copy"}
                 </button>
-                <div ref={transcriptRef} className="overflow-auto p-4 flex flex-col gap-y-4 h-full">
+            </div>
+
+            <div className="relative flex-1 min-h-0">
+                <div ref={transcriptRef} className="h-full overflow-auto p-4 space-y-4">
                     {transcriptItems.map((item) => {
                         const { itemId, type, role, data, expanded, timestamp, title = "", isHidden, sourceBackend } = item
 
@@ -78,9 +81,10 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
 
                         if (type === "MESSAGE") {
                             const isUser = role === "user"
-                            const baseContainer = "flex justify-end flex-col"
-                            const containerClasses = `${baseContainer} ${isUser ? "items-end" : "items-start"}`
-                            const bubbleBase = `max-w-lg p-3 rounded-xl ${isUser ? "bg-gray-900 text-gray-100" : "bg-gray-100 text-black"}`
+                            const containerClasses = `flex flex-col ${isUser ? "items-end" : "items-start"}`
+                            const bubbleBase = isUser
+                                ? "max-w-lg rounded-2xl bg-slate-900 px-4 py-3 text-slate-50 shadow-sm"
+                                : "max-w-lg rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 shadow-sm"
                             const isBracketedMessage = title.startsWith("[") && title.endsWith("]")
                             const messageStyle = isBracketedMessage ? "italic text-gray-400" : ""
                             const displayTitle = isBracketedMessage ? title.slice(1, -1) : title
@@ -89,20 +93,22 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
                                 <div key={itemId} className={containerClasses}>
                                     <div className={bubbleBase}>
                                         <div
-                                            className={`text-xs ${isUser ? "text-gray-400" : "text-gray-500"} font-mono`}
+                                            className={`text-[11px] font-mono ${
+                                                isUser ? "text-slate-300" : "text-slate-500"
+                                            }`}
                                         >
                                             {timestamp}{" "}
                                             {sourceBackend && (
                                                 <span className="ml-1 uppercase tracking-wide">[{sourceBackend}]</span>
                                             )}
                                         </div>
-                                        <div className={`whitespace-pre-wrap ${messageStyle}`}>
+                                        <div className={`mt-1 whitespace-pre-wrap leading-relaxed ${messageStyle}`}>
                                             <ReactMarkdown
                                                 components={{
                                                     a: ({ ...props }) => (
                                                         <a
                                                             {...props}
-                                                            className="text-blue hover:underline font-medium"
+                                                            className="font-semibold text-blue hover:underline"
                                                         />
                                                     ),
                                                 }}
@@ -117,23 +123,23 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
                             return (
                                 <div
                                     key={itemId}
-                                    className="flex flex-col justify-start items-start text-gray-500 text-sm"
+                                    className="flex flex-col items-start justify-start text-sm text-slate-600"
                                 >
-                                    <span className="text-xs font-mono">
+                                    <span className="text-[11px] font-mono text-slate-500">
                                         {timestamp}{" "}
                                         {sourceBackend && (
                                             <span className="ml-1 uppercase tracking-wide">[{sourceBackend}]</span>
                                         )}
                                     </span>
                                     <div
-                                        className={`whitespace-pre-wrap flex items-center font-mono text-sm text-gray-800 ${
+                                        className={`mt-1 flex items-center whitespace-pre-wrap rounded-xl border border-transparent px-2 py-1 font-mono text-sm text-slate-900 ${
                                             data ? "cursor-pointer" : ""
                                         }`}
                                         onClick={() => data && toggleTranscriptItemExpand(itemId)}
                                     >
                                         {data && (
                                             <span
-                                                className={`text-gray-400 mr-1 transform transition-transform duration-200 select-none font-mono ${
+                                                className={`mr-2 select-none font-mono text-slate-400 transition-transform duration-200 ${
                                                     expanded ? "rotate-90" : "rotate-0"
                                                 }`}
                                             >
@@ -143,8 +149,8 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
                                         {title}
                                     </div>
                                     {expanded && data && (
-                                        <div className="text-gray-800 text-left">
-                                            <pre className="border-l-2 ml-1 border-gray-200 whitespace-pre-wrap break-words font-mono text-xs mb-2 mt-2 pl-2">
+                                        <div className="mt-2 text-left text-slate-900">
+                                            <pre className="whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-50 p-3 font-mono text-xs">
                                                 {JSON.stringify(data, null, 2)}
                                             </pre>
                                         </div>
@@ -156,7 +162,7 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
                             return (
                                 <div
                                     key={itemId}
-                                    className="flex justify-center text-gray-500 text-sm italic font-mono"
+                                    className="flex justify-center font-mono text-sm italic text-slate-500"
                                 >
                                     Unknown item type: {type} <span className="ml-2 text-xs">{timestamp}</span>
                                 </div>
@@ -166,26 +172,25 @@ function Transcript({ userText, setUserText, onSendMessage, canSend }: Transcrip
                 </div>
             </div>
 
-            <div className="p-4 flex items-center gap-x-2 flex-shrink-0 border-t border-gray-200">
+            <div className="flex shrink-0 items-center gap-2 border-t border-slate-200 bg-white/70 p-3 backdrop-blur sm:p-4">
                 <input
                     ref={inputRef}
                     type="text"
                     value={userText}
                     onChange={(e) => setUserText(e.target.value)}
                     onKeyDown={(e) => {
-                        if (e.key === "Enter" && canSend) {
-                            onSendMessage()
-                        }
+                        if (e.key === "Enter" && canSend) onSendMessage()
                     }}
-                    className="flex-1 px-4 py-2 focus:outline-none"
+                    className="control flex-1"
                     placeholder="Type a message..."
                 />
                 <button
                     onClick={onSendMessage}
                     disabled={!canSend || !userText.trim()}
-                    className="bg-blue text-white rounded-full px-2 py-2 disabled:opacity-50"
+                    className="btn btn-primary h-11 w-11 shrink-0 rounded-full p-0"
+                    aria-label="Send message"
                 >
-                    <Image src="arrow.svg" alt="Send" width={24} height={24} />
+                    <Image src="/arrow.svg" alt="" width={20} height={20} />
                 </button>
             </div>
         </div>
