@@ -15,8 +15,8 @@ function Events({ isExpanded }: EventsProps) {
   const { loggedEvents, toggleExpand } = useEvent();
 
   const getDirectionArrow = (direction: string) => {
-    if (direction === "client") return { symbol: "▲", color: "#7f5af0" };
-    if (direction === "server") return { symbol: "▼", color: "#2cb67d" };
+    if (direction === "client") return { symbol: "▲", color: "#0B64DD" };
+    if (direction === "server") return { symbol: "▼", color: "#02BCB7" };
     return { symbol: "•", color: "#555" };
   };
 
@@ -32,77 +32,68 @@ function Events({ isExpanded }: EventsProps) {
   }, [loggedEvents, isExpanded]);
 
   return (
-    <div
-      className={
-        (isExpanded ? "w-1/2 overflow-auto" : "w-0 overflow-hidden opacity-0") +
-        " transition-all rounded-xl duration-200 ease-in-out flex flex-col bg-white"
-      }
-      ref={eventLogsContainerRef}
-    >
-      {isExpanded && (
+    <div className="card-solid flex min-h-0 flex-col overflow-hidden">
+      <div className="border-b border-slate-200 bg-white/70 px-4 py-3 backdrop-blur">
+        <div className="text-sm font-semibold text-slate-900">Logs</div>
+        <div className="mt-0.5 text-xs text-slate-600">
+          Protocol events sent between client and server.
+        </div>
+      </div>
+
+      <div className="min-h-0 overflow-auto" ref={eventLogsContainerRef}>
         <div>
-          <div className="font-semibold px-6 py-4 sticky top-0 z-10 text-base border-b bg-white">
-            Logs
-          </div>
-          <div>
-            {loggedEvents.map((log) => {
+          {loggedEvents.map((log) => {
 
-              if (log.eventName === "response.audio_transcript.delta" || log.eventName === "response.function_call_arguments.delta") {
-                return null;
-              }
-              const arrowInfo = getDirectionArrow(log.direction);
-              const isError =
-                log.eventName.toLowerCase().includes("error") ||
-                log.eventData?.response?.status_details?.error != null;
+            if (
+              log.eventName === "response.audio_transcript.delta" ||
+              log.eventName === "response.function_call_arguments.delta"
+            ) {
+              return null;
+            }
 
-              return (
-                <div
-                  key={log.id}
-                  className="border-t border-gray-200 py-2 px-6 font-mono"
+            const arrowInfo = getDirectionArrow(log.direction);
+            const isError =
+              log.eventName.toLowerCase().includes("error") ||
+              log.eventData?.response?.status_details?.error != null;
+
+            return (
+              <div key={log.id} className="border-t border-slate-200 px-4 py-2 font-mono">
+                <button
+                  type="button"
+                  onClick={() => toggleExpand(log.id)}
+                  className="flex w-full cursor-pointer items-start justify-between gap-2 text-left"
                 >
-                  <div
-                    onClick={() => toggleExpand(log.id)}
-                    className="flex items-center justify-between cursor-pointer"
-                  >
-                    <div className="flex items-center flex-1">
-                      <span
-                        style={{ color: arrowInfo.color }}
-                        className="ml-1 mr-2"
-                      >
-                        {arrowInfo.symbol}
-                      </span>
-                      <span
-                        className={
-                          "flex-1 text-sm " +
-                          (isError ? "text-red-600" : "text-gray-800")
-                        }
-                      >
+                  <div className="flex min-w-0 flex-1 items-start gap-2">
+                    <span style={{ color: arrowInfo.color }} className="mt-0.5 shrink-0">
+                      {arrowInfo.symbol}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className={"truncate text-sm " + (isError ? "text-red-600" : "text-slate-900")}>
                         {log.eventName}
                         {log.sourceBackend && (
-                          <span className="ml-2 text-[10px] uppercase tracking-wide text-gray-500">
+                          <span className="ml-2 text-[10px] uppercase tracking-wide text-slate-500">
                             [{log.sourceBackend}]
                           </span>
                         )}
-                      </span>
-                    </div>
-                    <div className="text-gray-500 ml-1 text-xs whitespace-nowrap">
-                      {log.timestamp}
+                      </div>
+                      <div className="mt-0.5 text-xs text-slate-500">{log.timestamp}</div>
                     </div>
                   </div>
+                  <div className="shrink-0 text-xs text-slate-500">{log.expanded ? "Hide" : "Show"}</div>
+                </button>
 
-                  {log.expanded && log.eventData && (
-                    <div className="text-gray-800 text-left">
-                      <pre className="border-l-2 ml-1 border-gray-200 whitespace-pre-wrap break-words font-mono text-xs mb-2 mt-2 pl-2">
-                        {JSON.stringify(log.eventData, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                {log.expanded && log.eventData && (
+                  <div className="mt-2 text-left text-slate-900">
+                    <pre className="whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-50 p-3 font-mono text-xs">
+                      {JSON.stringify(log.eventData, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-      )}
+      </div>
     </div>
   );
 }

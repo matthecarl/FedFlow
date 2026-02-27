@@ -615,6 +615,11 @@ function validateEventData(eventType: string, eventData: any): string | null {
 
         case "response.done":
             enrichEventDataFromResponse(eventData)
+            // Some client event shapes use response_id instead of a full response object.
+            if (!eventData.responseId && eventData.response_id) {
+                eventData.responseId = eventData.response_id
+            }
+
             if (!eventData.response && !eventData.responseId) {
                 return "response.done events require response payload data"
             }

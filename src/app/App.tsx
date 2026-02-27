@@ -75,7 +75,7 @@ function Logic() {
     })
 
     return (
-        <div className="text-base flex flex-col h-screen bg-gray-100 text-gray-800 relative">
+        <div className="flex min-h-dvh flex-col text-slate-900">
             <Header
                 agentSetKey={agentSetKey}
                 selectedAgentName={selectedAgentName}
@@ -93,6 +93,9 @@ function Logic() {
                 localStream={localStream}
                 remoteStream={remoteStream}
                 isEventsPaneExpanded={isEventsPaneExpanded}
+                sessionStatus={sessionStatus}
+                selectedAgentName={selectedAgentName}
+                conversationMode={conversationMode}
             />
 
             <BottomToolbar
