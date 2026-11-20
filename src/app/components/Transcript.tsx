@@ -108,6 +108,7 @@ function Transcript({ userText, setUserText, onSendMessage, canSend, sessionStat
                                         </div>
                                         <div className={`mt-1 whitespace-pre-wrap leading-relaxed ${messageStyle}`}>
                                             <ReactMarkdown
+                                                disallowedElements={["img"]}
                                                 remarkPlugins={!isUser && item.status === "DONE" ? transcriptLinkPlugins : undefined}
                                                 components={{
                                                     a: ({ ...props }) => (

@@ -12,6 +12,7 @@ type EventContextValue = {
 }
 
 const EventContext = createContext<EventContextValue | undefined>(undefined)
+const MAX_LOGGED_EVENTS = 500
 
 export const EventProvider: FC<PropsWithChildren> = ({ children }) => {
     const [loggedEvents, setLoggedEvents] = useState<LoggedEvent[]>([])
@@ -21,16 +22,13 @@ export const EventProvider: FC<PropsWithChildren> = ({ children }) => {
         eventName: string,
         eventData: Record<string, any>,
     ) {
+        if (typeof eventData.type === "string" && eventData.type.endsWith(".delta")) return
         const id = eventData.event_id || uuidv4()
-
-        if (eventName === "response.audio_transcript.delta" || eventName === "response.function_call_arguments.delta") {
-            // console.log("Skipping logging of response.audio_transcript.delta event")
-        }
 
         setLoggedEvents((prev) => {
             if (prev.some((e) => e.id === id)) return prev // Avoid duplicates
             return [
-                ...prev,
+                ...prev.slice(-(MAX_LOGGED_EVENTS - 1)),
                 {
                     id,
                     direction,

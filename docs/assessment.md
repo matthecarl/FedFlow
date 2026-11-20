@@ -1,6 +1,6 @@
 # FedFlow — a cited handoff after a congressional research call
 
-A public affairs research desk fields questions about congressional service. An analyst takes the call, looks up the member in the Biographical Directory of the United States Congress, and writes a sourced handoff for a colleague. Repeating those steps slows down the briefing and leaves the next analyst to check the same dates.
+A public affairs research desk fields questions about congressional service. An analyst takes the call, looks up the member in the Biographical Directory of the United States Congress, and writes a sourced handoff for a colleague. Repeating those steps slows down briefings and leaves the next analyst to check the same dates. At an illustrative 20 requests per week and 15 minutes per handoff, preparation takes five analyst-hours a week. The pilot will measure the actual baseline.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   Browser[Reviewer browser]
-  Voice[OpenAI Realtime or AI Gateway]
+  Voice[OpenAI Realtime]
   DraftModel[OpenAI: GPT-5 mini]
   Elastic[External Elasticsearch: congressional biographies]
   subgraph Vercel
@@ -21,8 +21,11 @@ flowchart LR
     Work[Workflow: search then draft]
     Gateway[AI Gateway]
   end
-  Browser <-->|WebRTC or WebSocket audio| Voice
+  Browser <-->|Direct Greeter WebRTC| Voice
+  Browser <-->|BioGuide WebSocket audio| Gateway
   Browser <-->|reviewed excerpt and draft| App
+  App -->|short-lived voice credential| Gateway
+  App -->|short-lived voice credential| Voice
   App -->|voice search tool| Elastic
   App -->|start or recover run| Work
   Work -->|read-only search| Elastic
@@ -30,36 +33,63 @@ flowchart LR
   Gateway -->|model request| DraftModel
 ```
 
-Vercel connects the research workflow to an existing knowledge platform. Elasticsearch retains the index, ingestion, relevance configuration, and search permissions. The demo reads `person` through `profileText_semantic` over authenticated HTTPS. Voice and typed conversation use a short-lived browser credential for the agent’s realtime model. Vercel receives the explicitly approved text excerpt for the handoff. These are separate failure paths.
+Vercel connects the research workflow to the existing Elasticsearch platform, which retains the index, ingestion, relevance configuration, and search permissions. Vercel Functions and Workflow steps in `iad1` send read-only queries to the external Elasticsearch endpoint over HTTPS using a server-side API key. BioGuide reads `person` using `profileText_semantic`, full-text search, and member name fields. The browser receives short-lived voice credentials and sends the reviewed question and transcript excerpt to the Workflow. The Elastic deployment's region and private connectivity are unverified.
+
+For a pilot that requires private network access, validate a Secure Compute connection to the customer network and a private path to Elasticsearch. Verify region, DNS, routing, and index-scoped credentials before using live customer data. [Secure Compute](https://vercel.com/docs/networking/secure-compute)
 
 | Vercel choice | Role and trade-off |
 | --- | --- |
-| AI SDK | Validates the structured draft and gives the app usage data. The server resolves citation IDs against retrieved sources; human review checks whether the recommendation is supported. |
+| AI SDK | Validates the structured draft and gives the app usage data. The server resolves citation IDs against retrieved sources. A human checks whether each claim follows from the cited record. |
 | AI Gateway | Routes specialist conversations to four distinct realtime models and draft generation to `openai/gpt-5-mini`. Gateway usage covers the routed sessions and drafts. |
 | Workflows | Checkpoints retrieval and generation so the draft can continue when a tab reloads. It introduces state retention and retry semantics that matter in production. |
-| Vercel Functions | Runs the Next.js API routes for credential issuance, external retrieval, and starting or reading handoff runs. Long-lived audio travels between the browser and its selected voice service. |
+| Vercel Functions and Fluid Compute | Runs credential issuance, external retrieval, and Workflow API requests. Project settings confirm Fluid Compute and the `iad1` default region. Concurrency shares instances during I/O waits. Pricing includes active CPU, provisioned memory, and invocations. [Fluid Compute](https://vercel.com/docs/fluid-compute) |
 | Preview Deployments | Pin review to a commit and validate both providers and Elastic before promotion. Build readiness alone does not validate upstream credentials. |
 
-Development agents use Vercel Board for task coordination and review evidence. AI SDK, AI Gateway, and Workflows meet the AI-stack requirement.
+The research demo focuses on BioGuide and its cited handoff. The other specialists demonstrate optional provider routing using the same app. Next.js prerenders the page shell. Realtime state is browser-held, and credential, search, and receipt requests fetch live data with `no-store` responses.
 
 ## Reviewer walkthrough
 
-1. Open the commit-specific preview from the deck and sign in as `demo` with the supplied test password. If the deployment is protected, use the private link shared from Vercel.
+1. Open the private Vercel share link and sign in as `demo` with the separately provided test password. A fresh Chromium context accessed the `47c262c` preview through this path without signing into Vercel. The signed link and password are shared privately outside Git. [Vercel shareable links](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/sharable-links)
 2. Select BioGuide, choose **Connect**, grant microphone access, and ask “What congressional offices did John Quincy Adams hold, and when?” Inspect the retrieved evidence, then select **Draft handoff**. **Try sample call** uses a synthetic excerpt and the same live dependencies without a microphone.
 3. Review the excerpt and select **Generate handoff**. Open the draft when it is ready and follow its citations. To demonstrate Workflow recovery, refresh while the draft runs and verify that the same draft returns.
 
-The public repository is [FedFlow](https://github.com/matthecarl/FedFlow/tree/codex/vercel-sa-demo). Keep the commit, preview URL, and actual run evidence together in the deck. Supply test credentials privately.
+The public assessment source and commit history are on `codex/vercel-sa-demo`. The default `main` branch shows the earlier app. The review package pairs the submitted commit with its deployment URL and the recorded checks. [FedFlow assessment branch](https://github.com/matthecarl/FedFlow/tree/codex/vercel-sa-demo)
 
-## Evaluation and release
+## Evaluation and pilot targets
 
-- Run `npm run lint`, `node --test tests/*.test.cjs`, and `npm run build`. Exercise valid sources, irrelevant and missing evidence, a fabricated citation, dependency timeout, and an expired or modified receipt. Prefer deterministic failure fixtures over forcing outages in the shared project.
-- In preview, record the same receipt recovering the same result after refresh. Capture actual Gateway model usage, per-draft cost, latency, and the observed Workflow stages. Evaluate voice and the sample separately. For a production pilot, time five paired manual and assisted handoffs, aim for 30% less median preparation time, and require zero unsupported citations in the reviewed sample. These are pilot targets.
-- Preview → validation → invited research pilot → cutover → rollback. Advance after an operator verifies access, grounded citations, recovery, and dependency health. Use a 5% then 25% canary before full cutover where Rolling Releases is available. Pause promotion on a citation or recovery regression. Roll back to the last eligible production deployment and verify the voice and sample paths.
-- Production requires individual SSO, authorized access to run records, credential rotation, explicit transcript retention and data residency review, and usage controls. Demo data must be public or synthetic. Confirm that a provider change meets the same citation and privacy requirements before promoting it.
+Score each case on the expected status, official citation and claim support, abstention outside the corpus, and recovery of the same run. The 14 focused handoff tests passed using local fixtures with mocked search, generation, and route dependencies. Re-run with `node --test tests/support-handoff.test.cjs tests/support-handoff-ui.test.cjs`.
+
+| Fixture | Passing result |
+| --- | --- |
+| John Quincy Adams with duplicate hits and an altered indexed URL | Grounded draft with one canonical official member link |
+| Missing or irrelevant evidence | Insufficient evidence with no citations |
+| Fabricated source ID, unlisted inline `[S#]` citation, bare domain, or Markdown link | Insufficient evidence with no citations |
+| Search timeout or provider error | Sanitized failure with bounded retry behavior |
+| Tampered or expired receipt, missing run, or temporary outage | Terminal `404` for unavailable runs or invalid receipts, retryable `503` for an outage |
+| Lost start response, concurrent retry, or refresh | Same attempt key, same Workflow run and receipt |
+
+Targeted live checks exercised the microphone-free BioGuide sample and recovered the same Workflow draft after refresh, citing official record `A000041`. The `47c262c` preview also completed Greeter → IRS and IRS → VA transfers with synthetic microphone input, including 27.3 seconds of outgoing IRS playback before held speech was processed. The earlier Elastic specialist scored four of five cases on a strict live evaluator. One draft echoed a fabricated citation marker in prose. [BioGuide preview commit](https://github.com/matthecarl/FedFlow/commit/b73b7258969c0eb4e317f1dc86bedf79323789e2) · [Voice preview commit](https://github.com/matthecarl/FedFlow/commit/47c262c0b64b31507c83594106de8ff08115c82e)
+
+Pilot targets are illustrative. Time five paired manual and assisted handoffs and aim for at least **30% less median preparation time** with **zero unsupported citations** in the reviewed sample. In a separate 100-run technical check, target **p95 of 30 seconds or less** from submit to visible draft, **$0.01 or less in Gateway model charges per successful draft**, and **at least 99%** of valid in-flight receipts recovering the same run after refresh. Capture retrieval and generation timings separately. Model charges exclude the voice session and platform costs.
+
+## Release plan
+
+1. Build a commit-specific preview and run lint, `node --test tests/*.test.cjs`, `npm run build`, and the reviewer walkthrough. Verify credential issuance, external search, one-run recovery, citation accuracy, and cost against captured usage before promotion.
+2. Start with an invited research pilot. The proposed production canary moves from 5% to 25% once the project’s Rolling Releases configuration is verified. Confirm SSO, least-privilege access to run records, key rotation, data residency and retention, and spending controls before cutover. [Rolling Releases](https://vercel.com/docs/rolling-releases)
+3. If the canary emits an unsupported citation or shows a recovery regression, the release owner halts promotion, checks the failed run against the source, and restores the last healthy production deployment with `vercel rollback <deployment-id-or-url>` if needed. Verify sign-in, BioGuide search, and draft recovery on the restored deployment. [Vercel rollback](https://vercel.com/docs/cli/rollback)
+
+## Known limitations and risks
+
+- The preview uses shared credentials and signed receipts. New browser submissions use a Workflow start key to recover from duplicate POSTs. Its concurrency and retention tests exercised the local Workflow store. Older keyless API requests still create separate runs.
+- If enabled, the optional email feature accepts caller-supplied recipients under the shared demo credential. A production pilot should require verified recipient authorization and delivery auditing before enabling it.
+- The Workflow persists the approved excerpt. Preview telemetry can export sanitized spoken transcripts to Elastic APM. Use public or synthetic conversation material until transcript access, retention, and deletion are agreed with the customer.
+- Elasticsearch is the sole evidence source. Missing evidence produces an abstention, and upstream outages can fail the draft. Retrieved text and transcripts can contain prompt injection. Citation validation constrains links and identifiers, and the analyst still reviews factual support.
+- Hands-free overlap replay detects sustained microphone input above a noise threshold. Very quiet or brief speech can be missed, sustained background sound can trigger it, and transcription and timing vary by provider.
+- Draft generation uses `openai/gpt-5-mini`. For a pilot, evaluate adding `anthropic/claude-haiku-4.5` in `providerOptions.gateway.models` for eligible Gateway failures. Before enabling it, verify the same structured output and citation rubric, per-draft cost and latency, data handling, and an induced failure using Gateway attempt metadata. Keep Workflow's retry budget bounded and the human review step in place. [Gateway model fallbacks](https://vercel.com/docs/ai-gateway/models-and-providers/model-fallbacks) · [Claude Haiku 4.5](https://vercel.com/ai-gateway/models/anthropic/claude-haiku-4.5)
 
 ## Development tooling
 
-Codex agents worked in parallel on the voice UI, Workflow API and evaluation, and a parser benchmark. Vercel Board held private, unsynced task discussions and sanitized results. These are development tools; the deployed application uses the runtime paths described above.
+Codex agents worked in parallel on the voice UI, Workflow API, evaluation, and a parser benchmark. Vercel Board held private task discussions and sanitized results. Claude provided an independent assessment-fit and code review.
 
 ### Historical parser experiment
 

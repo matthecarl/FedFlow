@@ -8,7 +8,7 @@ function fixture(toolLogic = {}) {
     const telemetry = Object.fromEntries(["recordServerEvent", "recordTokenUsage", "recordToolCall", "recordResponseDoneDetails", "recordFullTranscript", "recordUserTranscript"].map(name => [name, () => {}]))
     const api = load("src/app/hooks/useHandleServerEvent.ts", {
         dependencies: {
-            react: { useRef: current => ({ current }) },
+            react: { useRef: current => ({ current }), useLayoutEffect: (effect) => effect() },
             "@/app/contexts/TranscriptContext": { useTranscript: () => ({ transcriptItems: [], addTranscriptBreadcrumb: (...args) => breadcrumbs.push(args), addTranscriptMessage() {}, updateTranscriptMessage() {}, updateTranscriptItemStatus() {} }) },
             "@/app/contexts/EventContext": { useEvent: () => ({ logServerEvent() {} }) },
             "@/app/lib/client-telemetry": telemetry,
@@ -16,7 +16,7 @@ function fixture(toolLogic = {}) {
         },
         globals: { window: {}, localStorage: { getItem: () => "test-user" }, console: { log() {}, warn() {}, error() {} } },
     })
-    const handle = api.useHandleServerEvent({ selectedAgentName: "IRS", selectedAgentConfigSet: [{ name: "IRS", toolLogic }, { name: "Medicare" }], sendClientEvent: event => sent.push(event), setSelectedAgentName() {} }).current
+    const handle = api.useHandleServerEvent({ selectedAgentName: "IRS", selectedAgentConfigSet: [{ name: "IRS", toolLogic, downstreamAgents: [{ name: "Medicare" }] }, { name: "Medicare" }], sendClientEvent: event => sent.push(event), setSelectedAgentName() {} }).current
     return { handle, sent, breadcrumbs }
 }
 function deferred() {

@@ -4,14 +4,16 @@ import { context, trace, SpanKind, SpanStatusCode } from "@opentelemetry/api"
 const ATTR_GEN_AI_OPERATION_NAME = "gen_ai.operation.name"
 const ATTR_GEN_AI_SYSTEM = "gen_ai.system"
 const ATTR_GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
+const unavailable = "OpenAI Realtime is temporarily unavailable."
+const headers = { "Cache-Control": "private, no-store, max-age=0" }
 
 // Get a tracer instance
 const tracer = trace.getTracer("openai-realtime-server")
 
-export async function POST() {
+export async function POST(request: Request) {
     const model = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2.1-mini"
     if (!process.env.OPENAI_API_KEY) {
-        return NextResponse.json({ error: "OpenAI API key is not configured on the server." }, { status: 503 })
+        return NextResponse.json({ error: "OpenAI Realtime is not configured." }, { status: 503, headers })
     }
     // Create a span for the session creation
     const span = tracer.startSpan("openai.realtime.session.create", {
@@ -33,9 +35,10 @@ export async function POST() {
                     Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
                     "Content-Type": "application/json",
                 },
-                signal: AbortSignal.timeout(15000),
+                signal: AbortSignal.any([request.signal, AbortSignal.timeout(15000)]),
                 cache: "no-store",
                 body: JSON.stringify({
+                    expires_after: { anchor: "created_at", seconds: 60 },
                     session: {
                         type: "realtime",
                         model,
@@ -51,39 +54,19 @@ export async function POST() {
         span.setAttribute("http.status_code", response.status)
 
         if (!response.ok) {
-            span.setStatus({
-                code: SpanStatusCode.ERROR,
-                message: `HTTP error ${response.status}: ${response.statusText}`,
-            })
+            span.setStatus({ code: SpanStatusCode.ERROR, message: "OpenAI Realtime rejected session creation." })
+            return NextResponse.json({ error: unavailable }, { status: response.status === 429 ? 429 : 502, headers })
         }
-
-        const data = await response.json()
-
-        // Add session ID if available
-        if (data?.value) {
-            span.setAttribute("genai.session.token_available", true)
+        const data = await response.json().catch(() => null)
+        if (typeof data?.value !== "string" || !data.value.trim() || !Number.isSafeInteger(data.expires_at)) {
+            span.setStatus({ code: SpanStatusCode.ERROR, message: "OpenAI Realtime returned an invalid credential." })
+            return NextResponse.json({ error: unavailable }, { status: 502, headers })
         }
-
-        if (!response.ok) {
-            return NextResponse.json({ error: data.error?.message || "OpenAI session creation failed." }, { status: response.status })
-        }
-        return NextResponse.json({ value: data.value, expires_at: data.expires_at, model }, {
-            headers: { "Cache-Control": "no-store" },
-        })
-    } catch (error) {
-        console.error("Error in /session:", error)
-
-        // Record error in span
-        span.setStatus({
-            code: SpanStatusCode.ERROR,
-            message: error instanceof Error ? error.message : "Unknown error",
-        })
-
-        if (error instanceof Error) {
-            span.recordException(error)
-        }
-
-        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })
+        span.setAttribute("genai.session.token_available", true)
+        return NextResponse.json({ value: data.value, expires_at: data.expires_at, model }, { headers })
+    } catch {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: "OpenAI Realtime session request failed." })
+        return NextResponse.json({ error: unavailable }, { status: 502, headers })
     } finally {
         span.end()
     }

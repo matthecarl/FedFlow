@@ -3,7 +3,7 @@
 import { ServerEvent, FunctionCallParams, UseHandleServerEventParams, TranscriptItem } from "@/app/types"
 import { useTranscript } from "@/app/contexts/TranscriptContext"
 import { useEvent } from "@/app/contexts/EventContext"
-import { useRef } from "react"
+import { useLayoutEffect, useRef } from "react"
 import {
     recordServerEvent,
     recordTokenUsage,
@@ -131,10 +131,11 @@ export function useHandleServerEvent({
         }
     }
 
-    const normalizeAgentToken = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, "")
-
-    const resolveTransferDestinationAgent = (args: any): { agentName: string | null; source: string } => {
-        const availableAgents = selectedAgentConfigSet || []
+    const resolveTransferDestinationAgent = (args: any) => {
+        const currentAgent = selectedAgentConfigSet?.find((agent) => agent.name === selectedAgentName)
+        const availableAgents = (currentAgent?.downstreamAgents ?? [])
+            .filter((agent) => agent.name !== selectedAgentName)
+            .map((agent) => agent.name)
 
         const candidateValues = [
             args?.destination_agent,
@@ -147,71 +148,9 @@ export function useHandleServerEvent({
             args?.agent,
         ].filter((value): value is string => typeof value === "string" && value.trim().length > 0)
 
-        const findAvailableAgent = (rawValue: string): string | null => {
-            const trimmed = rawValue.trim()
-            const normalized = normalizeAgentToken(trimmed)
-
-            // Exact/case-insensitive match
-            const exact = availableAgents.find((agent) => agent.name.toLowerCase() === trimmed.toLowerCase())
-            if (exact) {
-                return exact.name
-            }
-
-            // Fuzzy tokenized match for names like "Veteran Affairs Expert" -> "VA"
-            const fuzzy = availableAgents.find((agent) => {
-                const agentToken = normalizeAgentToken(agent.name)
-                return normalized.includes(agentToken) || agentToken.includes(normalized)
-            })
-            if (fuzzy) {
-                return fuzzy.name
-            }
-
-            const aliasMap: Record<string, string> = {
-                veteranaffairsexpert: "VA",
-                veteransaffairsexpert: "VA",
-                vaexpert: "VA",
-                medicarexpert: "Medicare",
-                elasticexpert: "Elastic",
-                irsexpert: "IRS",
-                bioguideexpert: "BioGuide",
-            }
-            const aliased = aliasMap[normalized]
-            if (aliased) {
-                const aliasMatch = availableAgents.find((agent) => agent.name.toLowerCase() === aliased.toLowerCase())
-                if (aliasMatch) {
-                    return aliasMatch.name
-                }
-            }
-
-            return null
-        }
-
-        for (const candidate of candidateValues) {
-            const resolved = findAvailableAgent(candidate)
-            if (resolved) {
-                return { agentName: resolved, source: "tool_args" }
-            }
-        }
-
-        const contextText = `${args?.rationale_for_transfer ?? ""} ${args?.conversation_context ?? ""}`.toLowerCase()
-        const keywordToAgent: Array<{ matcher: RegExp; preferred: string }> = [
-            { matcher: /\bveteran|veterans|veterans affairs|\bva\b/, preferred: "VA" },
-            { matcher: /\bmedicare|health care|healthcare/, preferred: "Medicare" },
-            { matcher: /\belastic|elasticsearch|observability|siem/, preferred: "Elastic" },
-            { matcher: /\birs|tax\b/, preferred: "IRS" },
-            { matcher: /\bbioguide|congress|representative|senator/, preferred: "BioGuide" },
-        ]
-
-        for (const candidate of keywordToAgent) {
-            if (candidate.matcher.test(contextText)) {
-                const match = availableAgents.find((agent) => agent.name.toLowerCase() === candidate.preferred.toLowerCase())
-                if (match) {
-                    return { agentName: match.name, source: "context_inference" }
-                }
-            }
-        }
-
-        return { agentName: null, source: "none" }
+        const requestedName = candidateValues[0]?.trim().toLowerCase()
+        const agentName = availableAgents.find((name) => name.toLowerCase() === requestedName) ?? null
+        return { agentName, availableAgents, requestedName }
     }
 
     /**
@@ -243,7 +182,7 @@ export function useHandleServerEvent({
                 did_transfer: true,
                 user_question: userQuestion,
                 conversation_context: conversationContext,
-                resolution_source: transferResolution.source,
+                resolution_source: "tool_args",
             }
 
             addTranscriptBreadcrumb(`Transfer to ${destinationAgent}`, transferResult)
@@ -281,15 +220,15 @@ export function useHandleServerEvent({
             return
         } else {
             console.warn(`[TRANSFER] FAILED - destination agent not found: ${destinationAgent ?? "unresolved"}`)
-            console.log(`[TRANSFER] Available agents: ${selectedAgentConfigSet?.map((a) => a.name).join(", ")}`)
+            console.log(`[TRANSFER] Available agents: ${transferResolution.availableAgents.join(", ")}`)
 
             // Prepare failure response
             const transferResult = {
                 destination_agent: destinationAgent || null,
                 did_transfer: false,
-                reason: destinationAgent ? "Agent not found" : "Missing destination_agent in function call arguments",
-                available_agents: selectedAgentConfigSet?.map((a) => a.name) || [],
-                resolution_source: transferResolution.source,
+                reason: transferResolution.requestedName ? "Choose an available downstream specialist." : "Missing destination_agent in function call arguments",
+                available_agents: transferResolution.availableAgents,
+                resolution_source: "none",
             }
 
             addTranscriptBreadcrumb(`Transfer to ${destinationAgent ?? "unknown"} failed`, transferResult)
@@ -790,7 +729,9 @@ export function useHandleServerEvent({
             sessionIdRef.current = event.session?.id ?? null
         }
         // Start a transaction for server event handling
-        const transaction = window.elasticApm?.startTransaction(`gen_ai.event.${event.type}`, "app.event")
+        const transaction = event.type.endsWith(".delta")
+            ? undefined
+            : window.elasticApm?.startTransaction(`gen_ai.event.${event.type}`, "app.event")
 
         try {
             // Log all server events
@@ -839,7 +780,7 @@ export function useHandleServerEvent({
 
                 // Create a span for telemetry recording
                 const telemetrySpan = transaction?.startSpan("gen_ai.record_telemetry", "app")
-                recordServerEvent(event.type, telemetryData)
+                recordServerEvent(event.type.includes("error") ? "error" : event.type, telemetryData)
                 telemetrySpan?.end()
             }
 
@@ -972,7 +913,9 @@ export function useHandleServerEvent({
 
     // Maintain a stable reference to the handler function
     const handleServerEventRef = useRef(handleServerEvent)
-    handleServerEventRef.current = handleServerEvent
+    useLayoutEffect(() => {
+        handleServerEventRef.current = handleServerEvent
+    })
 
     return handleServerEventRef
 }

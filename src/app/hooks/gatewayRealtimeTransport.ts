@@ -1,5 +1,6 @@
 import {
     Experimental_AbstractRealtimeSession,
+    experimental_decodeRealtimeAudio,
     gateway,
     type Experimental_RealtimeClientEvent,
     type Experimental_RealtimeServerEvent,
@@ -17,7 +18,10 @@ type InputAudio = Extract<Experimental_RealtimeClientEvent, { type: "input-audio
 const MAX_HELD_AUDIO_FRAMES = 3_200
 const MAX_HELD_AUDIO_BYTES = 4_500_000
 const AUDIO_REPLAY_INTERVAL_MS = 16
-const RESPONSE_START_WINDOW_MS = 8_000
+const RESPONSE_START_TIMEOUT_MS = 30_000
+const SPEECH_FRAME_SECONDS = 0.01
+const CONSECUTIVE_SPEECH_FRAMES = 3
+const SPEECH_RMS = 0.006
 
 function normalizeUsage(usage?: Experimental_RealtimeUsage) {
     if (!usage) return undefined
@@ -61,6 +65,7 @@ interface GatewayTransportOptions {
     playbackEnabled: boolean
     onEvent: (event: WireEvent) => void
     onPlaybackChange?: (isPlaying: boolean) => void
+    onBufferedSpeech?: () => void
     onOpen: () => void
     onClose: () => void
     onError: () => void
@@ -84,9 +89,16 @@ export class GatewayRealtimeTransport {
     private heldAudioBytes = 0
     private replayingAudio: InputAudio | null = null
     private responseStartDeadline = 0
+    private responseStarting: { eventId?: string; timer: ReturnType<typeof setTimeout> } | null = null
+    private speechSamples = 0
+    private speechEnergy = 0
+    private voicedFrames = 0
+    private notifiedBufferedSpeech = false
+    private speechFrameSamples: number
 
     constructor(private options: GatewayTransportOptions) {
         this.playbackEnabled = options.playbackEnabled
+        this.speechFrameSamples = Math.ceil((options.config?.inputAudioFormat?.rate ?? 24_000) * SPEECH_FRAME_SECONDS)
         const gatewayModel = gateway.experimental_realtime(options.model)
         this.session = new GatewaySession({
             model: {
@@ -120,9 +132,9 @@ export class GatewayRealtimeTransport {
                 this.readyState = "open"
                 options.onOpen()
             } else if (status === "error") {
-                this.clearHeldAudio()
-                options.onError()
+                this.fail()
             } else if (status === "disconnected") {
+                this.clearResponseStart()
                 this.clearHeldAudio()
                 options.onClose()
             }
@@ -161,6 +173,7 @@ export class GatewayRealtimeTransport {
             }
             this.heldAudio.push(event)
             this.heldAudioBytes += event.audio.length
+            this.observeBufferedSpeech(event.audio)
         }
         void this.replayAudio()
         return false
@@ -178,17 +191,61 @@ export class GatewayRealtimeTransport {
                 if (this.heldAudio.length) await new Promise((resolve) => setTimeout(resolve, AUDIO_REPLAY_INTERVAL_MS))
             }
         } catch {
-            this.clearHeldAudio()
-            if (this.readyState === "open") this.options.onError()
+            this.fail()
         } finally {
             this.replayingAudio = null
+            if (this.heldAudio.length === 0) this.resetSpeechDetector()
         }
+    }
+
+    private observeBufferedSpeech(audio: string) {
+        if (!this.options.onBufferedSpeech || this.notifiedBufferedSpeech) return
+        let samples: Float32Array
+        try {
+            samples = experimental_decodeRealtimeAudio(audio)
+        } catch {
+            this.resetSpeechDetector()
+            return
+        }
+        for (const sample of samples) {
+            this.speechEnergy += sample * sample
+            if (++this.speechSamples < this.speechFrameSamples) continue
+            const voiced = this.speechEnergy >= this.speechSamples * SPEECH_RMS * SPEECH_RMS
+            this.voicedFrames = voiced ? this.voicedFrames + 1 : 0
+            this.speechEnergy = 0
+            this.speechSamples = 0
+            if (this.voicedFrames >= CONSECUTIVE_SPEECH_FRAMES) {
+                this.notifiedBufferedSpeech = true
+                this.options.onBufferedSpeech()
+                return
+            }
+        }
+    }
+
+    private resetSpeechDetector() {
+        this.speechSamples = 0
+        this.speechEnergy = 0
+        this.voicedFrames = 0
+        this.notifiedBufferedSpeech = false
     }
 
     private clearHeldAudio() {
         this.heldAudio = []
         this.heldAudioBytes = 0
         this.responseStartDeadline = 0
+        this.resetSpeechDetector()
+    }
+
+    private clearResponseStart() {
+        if (this.responseStarting) clearTimeout(this.responseStarting.timer)
+        this.responseStarting = null
+        this.responseStartDeadline = 0
+    }
+
+    private fail() {
+        this.clearResponseStart()
+        this.clearHeldAudio()
+        if (this.readyState !== "closed") this.options.onError()
     }
 
     async connect(stream: MediaStream) {
@@ -225,7 +282,12 @@ export class GatewayRealtimeTransport {
                 break
             }
             case "response.create":
-                this.responseStartDeadline = Date.now() + RESPONSE_START_WINDOW_MS
+                this.clearResponseStart()
+                this.responseStartDeadline = Date.now() + RESPONSE_START_TIMEOUT_MS
+                this.responseStarting = {
+                    eventId: event.event_id,
+                    timer: setTimeout(() => this.fail(), RESPONSE_START_TIMEOUT_MS),
+                }
                 command = {
                     type: "response-create",
                     options: event.response?.instructions ? { instructions: event.response.instructions } : undefined,
@@ -238,9 +300,11 @@ export class GatewayRealtimeTransport {
             default:
                 return
         }
-        void this.session.sendEvent(command).catch(() => {
-            if (this.readyState === "open") this.options.onError()
-        })
+        try {
+            void this.session.sendEvent(command).catch(() => this.fail())
+        } catch {
+            this.fail()
+        }
     }
 
     async setPlaybackEnabled(enabled: boolean) {
@@ -261,6 +325,7 @@ export class GatewayRealtimeTransport {
 
     close() {
         this.readyState = "closed"
+        this.clearResponseStart()
         this.clearHeldAudio()
         this.session.dispose()
         this.stream = null
@@ -287,7 +352,7 @@ export class GatewayRealtimeTransport {
         if ("responseId" in event && event.responseId && event.type !== "delegation-created") {
             if (this.completedResponses.has(event.responseId)) return
             if (!this.responses.has(event.responseId)) {
-                this.responseStartDeadline = 0
+                this.clearResponseStart()
                 this.getResponse(event.responseId)
                 this.activeResponse = event.responseId
                 emit({ type: "response.created", response: { id: event.responseId } })
@@ -356,12 +421,23 @@ export class GatewayRealtimeTransport {
                 void this.replayAudio()
                 break
             }
-            case "error":
-                this.responseStartDeadline = 0
-                emit({ type: "error", error: { code: event.code, message: "The voice provider returned an error." } })
-                if (this.readyState === "connecting") this.options.onError()
+            case "error": {
+                // Normalized response-create has no eventId field. An error
+                // during startup without correlation cannot safely be retried.
+                const startsResponse = this.responseStarting !== null
+                const hasClientEventId = !!event.clientEventId
+                const matchesCreate = hasClientEventId && event.clientEventId === this.responseStarting?.eventId
+                const overlap = event.code === "conversation_already_has_active_response"
+                const reconnect = this.readyState === "connecting" || (startsResponse && (!hasClientEventId || (matchesCreate && overlap)))
+                if (matchesCreate) this.clearResponseStart()
+                emit({
+                    type: "error",
+                    error: { code: event.code, event_id: event.clientEventId, message: "The voice provider returned an error." },
+                })
+                if (reconnect) this.fail()
                 else void this.replayAudio()
                 break
+            }
         }
     }
 }

@@ -3,6 +3,7 @@ import type { TranscriptItem } from "@/app/types"
 
 const API = "/api/support/handoffs"
 const RECEIPT_KEY = "fedflow.bioguide.handoff.receipt"
+const SUBMISSION_KEY = "fedflow.bioguide.handoff.submission"
 export const SUPPORT_AGENT = "BioGuide"
 export const HANDOFF_QUESTION_LIMIT = 600
 export const HANDOFF_TRANSCRIPT_LIMIT = 4000
@@ -66,12 +67,24 @@ export function draftFromTranscript(items: TranscriptItem[]): HandoffDraft | nul
     }
 }
 
-function rememberReceipt(receipt?: string) {
+function rememberHandoffValue(key: string, value?: string) {
     try {
-        if (receipt) sessionStorage.setItem(RECEIPT_KEY, receipt)
-        else sessionStorage.removeItem(RECEIPT_KEY)
+        if (value) sessionStorage.setItem(key, value)
+        else sessionStorage.removeItem(key)
     } catch {
         // Storage can be disabled. The in-memory run still works on this page.
+    }
+}
+
+function rememberReceipt(receipt?: string) {
+    rememberHandoffValue(RECEIPT_KEY, receipt)
+}
+
+function readSubmissionKey() {
+    try {
+        return sessionStorage.getItem(SUBMISSION_KEY)
+    } catch {
+        return null
     }
 }
 
@@ -86,6 +99,7 @@ export function useSupportHandoff(items: TranscriptItem[]) {
     const [run, setRun] = useState<HandoffRun>({ status: "idle" })
     const [formError, setFormError] = useState("")
     const submission = useRef<AbortController | null>(null)
+    const submissionAttempt = useRef<{ key: string; body: string } | null>(null)
     const pendingReceipt = run.status === "pending" ? run.receipt : null
 
     useEffect(() => {
@@ -168,19 +182,32 @@ export function useSupportHandoff(items: TranscriptItem[]) {
         const controller = new AbortController()
         submission.current = controller
         try {
+            const payload = JSON.stringify({ question: draft.question.trim(), transcript: draft.transcript.trim() })
+            const previous = submissionAttempt.current
+            let key = previous?.key ?? readSubmissionKey()
+            if (!key || (previous && previous.body !== payload)) key = crypto.randomUUID()
+            submissionAttempt.current = { key, body: payload }
+            // Persist only the random key. Workflow stores the matching draft fingerprint.
+            rememberHandoffValue(SUBMISSION_KEY, key)
             const response = await fetch(API, {
                 method: "POST",
                 cache: "no-store",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ question: draft.question.trim(), transcript: draft.transcript.trim() }),
+                headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+                body: payload,
                 signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
             })
             const body = await response.json().catch(() => null)
             if (controller.signal.aborted) return
+            if (response.status === 400 || response.status === 404 || response.status === 409) {
+                submissionAttempt.current = null
+                rememberHandoffValue(SUBMISSION_KEY)
+            }
             if (!response.ok || typeof body?.receipt !== "string") {
                 throw new Error(responseError(body, "Could not start the handoff. Try again."))
             }
             rememberReceipt(body.receipt)
+            submissionAttempt.current = null
+            rememberHandoffValue(SUBMISSION_KEY)
             setRun({ status: "pending", receipt: body.receipt })
         } catch (error) {
             if (!controller.signal.aborted) {

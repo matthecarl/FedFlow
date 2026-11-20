@@ -9,7 +9,7 @@ const React = require("react")
 const { renderToStaticMarkup } = require("react-dom/server")
 const load = require("./helpers/load-typescript.cjs")
 
-function renderTranscript(item) {
+function renderTranscript(item, { markdown, links } = {}) {
     const file = path.resolve(__dirname, "../src/app/components/Transcript.tsx")
     const source = ts.transpileModule(fs.readFileSync(file, "utf8"), {
         fileName: file,
@@ -19,9 +19,9 @@ function renderTranscript(item) {
         react: React,
         "react/jsx-runtime": require("react/jsx-runtime"),
         "next/image": require("next/image"),
-        "react-markdown": { default: () => { throw new Error("Architecture rendering must not depend on model Markdown") } },
+        "react-markdown": markdown ?? { default: () => { throw new Error("Architecture rendering must not depend on model Markdown") } },
         "@/app/contexts/TranscriptContext": { useTranscript: () => ({ transcriptItems: [item], toggleTranscriptItemExpand() {} }) },
-        "@/app/lib/transcript-links": { remarkTranscriptLinks: () => { throw new Error("Architecture rendering must not depend on transcript links") } },
+        "@/app/lib/transcript-links": links ?? { remarkTranscriptLinks: () => { throw new Error("Architecture rendering must not depend on transcript links") } },
         "./Events": { redactEventData: (_key, value) => value },
     }
     const context = { exports: {}, require: (name) => { assert.ok(name in dependencies, name); return dependencies[name] } }
@@ -46,4 +46,17 @@ test("unrecognized image URLs cannot become rendered tool-result images", () => 
     const html = renderTranscript({ itemId: "diagram", type: "BREADCRUMB", title: "Function result: showArchitecture", data: { type: "display_image", src: "https://example.test/tracker.png" }, expanded: false, isHidden: false })
     assert.ok(!html.includes("tracker.png"))
     assert.ok(!html.includes("<figcaption"))
+})
+
+test("ordinary transcript content cannot request images and citations remain clickable", async () => {
+    const markdown = await import("react-markdown")
+    const links = load("src/app/lib/transcript-links.ts", { dependencies: { linkifyjs: require("linkifyjs") } })
+    for (const role of ["assistant", "user"]) {
+        const html = renderTranscript({
+            itemId: "message", type: "MESSAGE", role, status: "DONE", isHidden: false,
+            title: "Read [Medicare](https://www.medicare.gov/). ![Remote image](https://example.test/remote.png)",
+        }, { markdown, links })
+        assert.doesNotMatch(html, /alt="Remote image"|example\.test\/remote\.png/)
+        assert.match(html, /href="https:\/\/www\.medicare\.gov\/"/)
+    }
 })

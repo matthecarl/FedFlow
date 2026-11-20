@@ -18,8 +18,8 @@ The active demo uses:
 
 | Variable | Purpose |
 | --- | --- |
-| `DEMO_PASSWORD_ENABLED` | Optional; protected by default. Set exactly `false` to temporarily disable the password gate |
-| `DEMO_PASSWORD` | Random password of at least 16 characters when protection is enabled; login username is `demo` |
+| `DEMO_PASSWORD_ENABLED` | Optional. Set exactly `false` to allow public access to the app shell and search routes |
+| `DEMO_PASSWORD` | Random password of at least 16 characters for reviewer access and protected APIs. Login username is `demo` |
 | `OPENAI_API_KEY` | Server-side OpenAI key with Realtime access and available quota |
 | `OPENAI_REALTIME_MODEL` | Optional for direct OpenAI Realtime. Defaults to `gpt-realtime-2.1-mini` |
 | `ELASTICSEARCH_CAPSTONE_URL` | Elasticsearch HTTPS endpoint |
@@ -36,7 +36,7 @@ Open [http://localhost:3000](http://localhost:3000), sign in as `demo` with your
 
 Typed messages use the active voice session and currently require a working microphone. Denied/unavailable microphone access, or a connection timeout while waiting for the microphone, opens a recovery dialog. Allow access in browser/site and device settings, then use **Refresh and try again** or **I've enabled my microphone — reconnect**. Refreshing alone does not clear a saved permission denial. Use **Try sample call** to exercise the handoff without a microphone.
 
-HTTP Basic authentication is on by default. The handoff API always requires the demo login. The framework-generated Workflow queue callback has its own authentication, so the Next.js proxy leaves that route to Workflow. User-facing API responses are private and uncached. Browsers remember Basic credentials. Use a private window for reviewer testing and close it after the demo. Rotating the password requires a new deployment. Older deployments retain their configuration and access settings.
+HTTP Basic authentication is on by default. Voice credential issuance, handoffs, email delivery, and telemetry always require the demo login. The framework-generated Workflow queue callback uses its own authentication. User-facing API responses are private and uncached. Browsers remember Basic credentials. Use a private window for reviewer testing and close it after the demo. Rotating the password requires a new deployment. Older deployments retain their configuration and access settings.
 
 ## Voice models
 

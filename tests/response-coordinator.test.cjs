@@ -115,6 +115,17 @@ test("unrelated errors cannot unlock a response but a rejected create can be ret
     assert.equal(sent.length, 2)
 })
 
+test("even a correlated late error cannot unlock an acknowledged response", () => {
+    const { sent, request, receive, created, done } = fixture()
+    request()
+    created("active")
+    request()
+    receive({ type: "error", error: { event_id: sent[0].event_id, code: "invalid_request_error" } })
+    assert.equal(sent.length, 1)
+    done("active")
+    assert.equal(sent.length, 2)
+})
+
 test("discarding audio during an input-mode change cannot leave a pending continuation stuck", () => {
     const { coordinator, sent, request } = fixture()
     coordinator.beginInput()

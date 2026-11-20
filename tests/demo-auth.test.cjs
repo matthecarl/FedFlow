@@ -69,7 +69,7 @@ test("preflight and internal-looking headers do not bypass credential checking",
 
 test("the Next matcher protects API, data, static, image, and dotted paths", () => {
     const { config } = gate()
-    for (const url of ["/", "/api/session", "/api/webrtc", "/api/elasticsearch?q=test", "/api/support/handoffs", "/_next/data/build/index.json", "/_next/static/chunks/app.js", "/_next/image?url=%2Fimage.png&w=100&q=75", "/favicon.ico", "/private.json", "/error-test", "/.well-known/workflow/v1/webhook/unused", "/.well-known/workflow/v1/flow-extra", "/foo/.well-known/workflow/v1/flow"]) {
+    for (const url of ["/", "/api/session", "/api/sendEmail", "/api/elasticsearch?q=test", "/api/support/handoffs", "/_next/data/build/index.json", "/_next/static/chunks/app.js", "/_next/image?url=%2Fimage.png&w=100&q=75", "/favicon.ico", "/private.json", "/error-test", "/.well-known/workflow/v1/webhook/unused", "/.well-known/workflow/v1/flow-extra", "/foo/.well-known/workflow/v1/flow"]) {
         assert.equal(unstable_doesMiddlewareMatch({ config, nextConfig: {}, url }), true, url)
     }
     for (const url of ["/.well-known/workflow/v1/flow", "/.well-known/workflow/v1/flow/?retry=1"]) {
@@ -82,7 +82,7 @@ test("only an explicit false disables the gate; absent or mistyped flags stay pr
         assert.equal(gate({ DEMO_PASSWORD_ENABLED: value }).proxy(request()).status, 503)
     }
     const { proxy } = gate({ DEMO_PASSWORD_ENABLED: "false" })
-    for (const path of ["/", "/api/session", "/_next/static/chunks/app.js"]) {
+    for (const path of ["/", "/api/elasticsearch?q=test", "/_next/static/chunks/app.js"]) {
         const response = proxy(request(path))
         assert.equal(response.headers.get("x-middleware-next"), "1")
         assert.equal(response.headers.get("www-authenticate"), null)
@@ -94,13 +94,13 @@ test("disabled password gate still blocks cross-origin API requests", () => {
     const { proxy } = gate({ DEMO_PASSWORD_ENABLED: "false" })
     for (const method of ["GET", "POST", "OPTIONS"]) {
         for (const headers of [{ origin: "https://attacker.example" }, { "sec-fetch-site": "cross-site" }]) {
-            const response = proxy(request("/api/session", headers, method))
+            const response = proxy(request("/api/elasticsearch?q=test", headers, method))
             assert.equal(response.status, 403)
             assert.equal(response.headers.get("x-middleware-next"), null)
             assertPrivate(response)
         }
     }
-    assert.equal(proxy(request("/api/session", { origin: "https://demo.example" }, "POST")).headers.get("x-middleware-next"), "1")
+    assert.equal(proxy(request("/api/elasticsearch?q=test", { origin: "https://demo.example" })).headers.get("x-middleware-next"), "1")
 })
 
 test("handoffs require demo access when the general password gate is disabled", () => {
@@ -112,19 +112,22 @@ test("handoffs require demo access when the general password gate is disabled", 
     }
 })
 
-test("Gateway token minting requires demo access and blocks cross-origin requests even when the general gate is disabled", () => {
+test("voice token minting, email, and telemetry require demo access even when the general gate is disabled", () => {
     const { proxy } = gate({ DEMO_PASSWORD: password, DEMO_PASSWORD_ENABLED: "false" })
-    const path = "/api/session/gateway?agent=IRS"
-    assert.equal(proxy(request(path, {}, "POST")).status, 401)
-    assert.equal(proxy(request(path, { authorization: authorization(), origin: "https://other.example" }, "POST")).status, 403)
-    const allowed = proxy(request(path, { authorization: authorization(), origin: "https://demo.example" }, "POST"))
-    assert.equal(allowed.headers.get("x-middleware-next"), "1")
-    assert.equal(allowed.headers.get("x-middleware-request-authorization"), null)
-    assertPrivate(allowed)
+    const unconfigured = gate({ DEMO_PASSWORD_ENABLED: "false" }).proxy
+    for (const path of ["/api/session", "/api/session/", "/api/session/gateway?agent=IRS", "/api/sendEmail", "/api/sendEmail/", "/api/telemetry", "/api/telemetry/"]) {
+        assert.equal(unconfigured(request(path, {}, "POST")).status, 503)
+        assert.equal(proxy(request(path, {}, "POST")).status, 401)
+        assert.equal(proxy(request(path, { authorization: authorization(), origin: "https://other.example" }, "POST")).status, 403)
+        const allowed = proxy(request(path, { authorization: authorization(), origin: "https://demo.example" }, "POST"))
+        assert.equal(allowed.headers.get("x-middleware-next"), "1")
+        assert.equal(allowed.headers.get("x-middleware-request-authorization"), null)
+        assertPrivate(allowed)
+    }
 })
 
 test("disabled password gate strips cached Authorization credentials before handlers", () => {
-    const response = gate({ DEMO_PASSWORD_ENABLED: "false" }).proxy(request("/api/session", { authorization: authorization(), "x-request-id": "disabled-gate-check" }, "POST"))
+    const response = gate({ DEMO_PASSWORD_ENABLED: "false" }).proxy(request("/api/elasticsearch?q=test", { authorization: authorization(), "x-request-id": "disabled-gate-check" }))
     assert.equal(response.headers.get("x-middleware-next"), "1")
     assert.equal(response.headers.get("x-middleware-request-authorization"), null)
     assert.ok(!response.headers.get("x-middleware-override-headers").split(",").includes("authorization"))

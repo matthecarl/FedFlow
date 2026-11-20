@@ -8,14 +8,14 @@ const load = require("./helpers/load-typescript.cjs")
 
 const processorPath = path.join(__dirname, "../public/fedflow-microphone.worklet.js")
 
-function fixture() {
+function fixture(sampleRate = 100) {
     let FedFlowMicrophone
     const events = []
     vm.runInNewContext(fs.readFileSync(processorPath, "utf8"), {
         AudioWorkletProcessor: class {
             port = { postMessage: (message) => events.push(message) }
         },
-        sampleRate: 100,
+        sampleRate,
         registerProcessor(name, processor) {
             assert.equal(name, "fedflow-microphone")
             FedFlowMicrophone = processor
@@ -27,8 +27,8 @@ function fixture() {
         events,
         command: (data) => processor.port.onmessage({ data }),
         frame(signal = 0) {
-            const input = new Float32Array(10).fill(signal)
-            const output = new Float32Array(10)
+            const input = typeof signal === "number" ? new Float32Array(10).fill(signal) : Float32Array.from(signal)
+            const output = new Float32Array(input.length)
             processor.process([[input]], [[output]])
             return Math.round(output[0] * 100)
         },
@@ -73,6 +73,33 @@ test("explicit interruption discards buffered audio before returning to live cap
     command("discard")
     assert.equal(frame(0.7), 70)
     assert.equal(frame(), 0)
+})
+
+test("separated microphone clicks do not accumulate into a buffered caller turn", () => {
+    const { command, frame, events } = fixture(1000)
+    command("hold")
+    for (let i = 0; i < 10; i++) {
+        frame([0.6, 0.6, 0.6, 0, 0, 0, 0, 0, 0, 0])
+        for (let j = 0; j < 39; j++) frame()
+    }
+    assert.deepEqual(events, [])
+    command("release")
+    assert.equal(frame(0.6), 60)
+
+    command("hold")
+    frame(0.1)
+    frame(0.2)
+    frame(0.3)
+    assert.deepEqual(events, ["speech-buffered"])
+})
+
+test("five seconds of steady RMS 0.005 do not signal speech or add microphone replay delay", () => {
+    const { command, frame, events } = fixture(1000)
+    command("hold")
+    for (let i = 0; i < 500; i++) frame(0.005)
+    assert.deepEqual(events, [])
+    command("release")
+    assert.equal(frame(0.2), 20)
 })
 
 test("cancelled startup closes the audio context and both microphone tracks before a late worklet load", async () => {

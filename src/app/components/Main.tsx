@@ -44,7 +44,7 @@ export function Main({
     const route = getVoiceRoute(selectedAgentName)
 
     return (
-        <main className="workspace app-container">
+        <main className="workspace app-container fs-exclude">
             <div className="session-strip" aria-label="Session information">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
                     <span className="inline-flex items-center gap-2 text-sm font-semibold" role="status">

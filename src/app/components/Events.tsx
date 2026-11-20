@@ -1,8 +1,7 @@
 "use client";
 
-import React, { useRef, useEffect, useState } from "react";
+import React, { useRef, useEffect } from "react";
 import { useEvent } from "@/app/contexts/EventContext";
-import { LoggedEvent } from "@/app/types";
 
 export interface EventsProps {
   isExpanded: boolean;
@@ -14,13 +13,13 @@ export function redactEventData(_key: string, value: unknown): unknown {
     return "[REDACTED]";
   }
   if (typeof value === "string") {
-    return value.replace(/\b(?:sk-|ek[_-])[A-Za-z0-9_-]+/g, "[REDACTED]").replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
+    return value.replace(/\b(?:sk-|ek[_-]|vcst_)[A-Za-z0-9_-]+/g, "[REDACTED]").replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
   }
   return value;
 }
 
 function Events({ isExpanded }: EventsProps) {
-  const [prevEventLogs, setPrevEventLogs] = useState<LoggedEvent[]>([]);
+  const lastEventIdRef = useRef<string | number | undefined>(undefined);
   const eventLogsContainerRef = useRef<HTMLDivElement | null>(null);
 
   const { loggedEvents, toggleExpand } = useEvent();
@@ -32,14 +31,14 @@ function Events({ isExpanded }: EventsProps) {
   };
 
   useEffect(() => {
-    const hasNewEvent = loggedEvents.length > prevEventLogs.length;
+    const latestEventId = loggedEvents.at(-1)?.id;
 
-    if (isExpanded && hasNewEvent && eventLogsContainerRef.current) {
+    if (isExpanded && latestEventId !== lastEventIdRef.current && eventLogsContainerRef.current) {
       eventLogsContainerRef.current.scrollTop =
         eventLogsContainerRef.current.scrollHeight;
     }
 
-    setPrevEventLogs(loggedEvents);
+    lastEventIdRef.current = latestEventId;
   }, [loggedEvents, isExpanded]);
 
   return (
@@ -55,14 +54,6 @@ function Events({ isExpanded }: EventsProps) {
       <div className="events-scroll" ref={eventLogsContainerRef}>
         <div>
           {loggedEvents.map((log) => {
-
-            if (
-              log.eventName === "response.audio_transcript.delta" ||
-              log.eventName === "response.output_audio_transcript.delta" ||
-              log.eventName === "response.function_call_arguments.delta"
-            ) {
-              return null;
-            }
 
             const arrowInfo = getDirectionArrow(log.direction);
             const isError =

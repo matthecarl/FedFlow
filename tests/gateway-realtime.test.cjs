@@ -16,6 +16,8 @@ function gatewayFixture() {
     let stops = 0
     let pendingAudioSends = 0
     let peakPendingAudioSends = 0
+    let bufferedTurns = 0
+    const deadlines = new Set()
     const playbackChanges = []
     class SdkSession {
         constructor(options) {
@@ -40,10 +42,23 @@ function gatewayFixture() {
         dispose() { this.disposed = true }
     }
     const { GatewayRealtimeTransport } = load("src/app/hooks/gatewayRealtimeTransport.ts", {
-        globals: { setTimeout: (callback) => Promise.resolve().then(callback) },
+        globals: {
+            setTimeout(callback, delay) {
+                if (delay === 16) return Promise.resolve().then(callback)
+                deadlines.add(callback)
+                return callback
+            },
+            clearTimeout: (callback) => deadlines.delete(callback),
+        },
         dependencies: {
             ai: {
                 Experimental_AbstractRealtimeSession: SdkSession,
+                experimental_decodeRealtimeAudio(encoded) {
+                    const pcm = Buffer.from(encoded, "base64")
+                    const samples = new Float32Array(Math.floor(pcm.length / 2))
+                    for (let i = 0; i < samples.length; i++) samples[i] = pcm.readInt16LE(i * 2) / 32768
+                    return samples
+                },
                 gateway: {
                     experimental_realtime: (modelId) => ({
                         modelId,
@@ -64,6 +79,7 @@ function gatewayFixture() {
         playbackEnabled: true,
         onEvent: (event) => events.push(event),
         onPlaybackChange: (isPlaying) => playbackChanges.push(isPlaying),
+        onBufferedSpeech: () => { bufferedTurns++ },
         onOpen: () => { opens++ },
         onClose: () => { closes++ },
         onError: () => { errors++ },
@@ -75,6 +91,8 @@ function gatewayFixture() {
         receive: (event) => session.options.onEvent(event),
         capture: (audio) => session.sendEvent({ type: "input-audio-append", audio }),
         peakPendingAudioSends: () => peakPendingAudioSends,
+        bufferedTurns: () => bufferedTurns,
+        expireResponseStart: () => { for (const expire of deadlines) expire() },
         playback: (isPlaying) => {
             session.state.isPlaying = isPlaying
             session.setState("isPlaying", isPlaying)
@@ -183,6 +201,65 @@ test("Gateway identifies a Gemini turn even when no response-created arrived", (
 })
 
 const audioFrames = (events) => events.filter(({ type }) => type === "input-audio-append").map(({ audio }) => audio)
+
+test("Gateway forwards correlated errors and reconnects when a response rejection cannot be identified", () => {
+    const { transport, events, status, receive, errors, expireResponseStart } = gatewayFixture()
+    status("connected")
+    transport.send({ type: "response.create", event_id: "create-one" })
+    receive({ type: "error", clientEventId: "audio-append", code: "invalid_request_error" })
+    assert.equal(events.at(-1).error.event_id, "audio-append")
+    assert.equal(errors(), 0)
+    receive({ type: "error", clientEventId: "create-one", code: "invalid_request_error" })
+    assert.equal(events.at(-1).error.event_id, "create-one")
+    expireResponseStart()
+    assert.equal(errors(), 0)
+
+    transport.send({ type: "response.create", event_id: "create-two" })
+    receive({ type: "error", code: "invalid_request_error", message: "unsafe provider detail" })
+    assert.equal(events.at(-1).error.message, "The voice provider returned an error.")
+    assert.equal(errors(), 1)
+    expireResponseStart()
+    assert.equal(errors(), 1)
+})
+
+test("Gateway submission times out only when the provider never starts a response", () => {
+    const { transport, status, receive, errors, expireResponseStart } = gatewayFixture()
+    status("connected")
+    transport.send({ type: "response.create", event_id: "create-one" })
+    receive({ type: "output-item-added", responseId: "active" })
+    receive({ type: "error", code: "conversation_already_has_active_response" })
+    expireResponseStart()
+    assert.equal(errors(), 0)
+
+    receive({ type: "response-done", responseId: "active", status: "completed" })
+    transport.send({ type: "response.create", event_id: "create-two" })
+    expireResponseStart()
+    assert.equal(errors(), 1)
+})
+
+test("only sustained held Gateway speech announces a newer caller turn", () => {
+    const { status, receive, capture, bufferedTurns } = gatewayFixture()
+    const window = (level = 0, count = 240, start = 0) => {
+        const pcm = Buffer.alloc(480)
+        const end = Math.min(start + count, pcm.length / 2)
+        for (let sample = start; sample < end; sample++) pcm.writeInt16LE(level, sample * 2)
+        return pcm.toString("base64")
+    }
+    status("connected")
+    receive({ type: "response-created", responseId: "outgoing" })
+    const roomNoise = window(164)
+    for (let i = 0; i < 500; i++) capture(roomNoise)
+    assert.equal(bufferedTurns(), 0)
+    for (let i = 0; i < 10; i++) {
+        // A 3 ms click straddles two analysis windows.
+        capture(window(14_000, 36, 204))
+        capture(window(14_000, 36))
+        for (let j = 0; j < 38; j++) capture(roomNoise)
+    }
+    assert.equal(bufferedTurns(), 0)
+    for (let i = 0; i < 4; i++) capture(window(2400))
+    assert.equal(bufferedTurns(), 1)
+})
 
 test("Gateway retains hands-free audio from response request through playback and replays it in order", async () => {
     const { transport, sent, events, status, receive, capture, playback } = gatewayFixture()

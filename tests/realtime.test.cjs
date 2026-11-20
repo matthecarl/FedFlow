@@ -27,29 +27,41 @@ function sessionFixture(env, fetch) {
     })
 }
 
+const mintRequest = () => new Request("https://example.test/api/session", { method: "POST" })
+
 test("session mint uses the current endpoint/schema and never caches ephemeral credentials", async () => {
     let sent
     const route = sessionFixture({ OPENAI_API_KEY: "test-only", OPENAI_REALTIME_MODEL: "configured-model" }, async (url, options) => {
         sent = { url, ...options }
         return Response.json({ value: "ephemeral-test", expires_at: 123, private_metadata: "do not forward" })
     })
-    const response = await route.POST()
+    const response = await route.POST(mintRequest())
     assert.equal(sent.url, "https://api.openai.com/v1/realtime/client_secrets")
     assert.equal(sent.method, "POST")
     assert.deepEqual(JSON.parse(sent.body), {
+        expires_after: { anchor: "created_at", seconds: 60 },
         session: { type: "realtime", model: "configured-model", audio: { input: { turn_detection: null }, output: { voice: "echo" } } },
     })
-    assert.equal(response.headers.get("cache-control"), "no-store")
+    assert.match(response.headers.get("cache-control"), /private.*no-store/)
     assert.deepEqual(await response.json(), { value: "ephemeral-test", expires_at: 123, model: "configured-model" })
 })
 
-test("missing key avoids OpenAI requests and upstream failures retain HTTP status", async () => {
-    const missing = sessionFixture({}, () => { throw new Error("must not call") })
-    assert.equal((await missing.POST()).status, 503)
-    const failing = sessionFixture({ OPENAI_API_KEY: "test-only" }, async () => Response.json({ error: { message: "Quota exceeded" } }, { status: 429 }))
-    const response = await failing.POST()
-    assert.equal(response.status, 429)
-    assert.equal((await response.json()).error, "Quota exceeded")
+test("session mint sanitizes upstream failures and rejects missing or malformed credentials", async () => {
+    const missing = sessionFixture({}, () => { assert.fail("Unexpected OpenAI request") })
+    assert.equal((await missing.POST(mintRequest())).status, 503)
+    const env = { OPENAI_API_KEY: "test-only" }
+    for (const [upstream, expected] of [
+        [Response.json({ error: { message: "private upstream response" } }, { status: 429 }), 429],
+        [Response.json({ error: { message: "private upstream response" } }, { status: 403 }), 502],
+        [Response.json({ value: "", expires_at: 123 }), 502],
+        [Response.json({ value: "private upstream response" }), 502],
+        [new Response("private upstream response"), 502],
+    ]) {
+        const response = await sessionFixture(env, async () => upstream).POST(mintRequest())
+        assert.equal(response.status, expected)
+        assert.match(response.headers.get("cache-control"), /private.*no-store/)
+        assert.deepEqual(await response.json(), { error: "OpenAI Realtime is temporarily unavailable." })
+    }
 })
 
 function webRtcFixture({ fetch, getUserMedia } = {}) {
@@ -129,7 +141,7 @@ function eventFixture(telemetryOverrides = {}, transcriptItems = [], handlerOver
     Object.assign(telemetry, telemetryOverrides)
     const api = load("src/app/hooks/useHandleServerEvent.ts", {
         dependencies: {
-            react: { useRef: current => ({ current }) },
+            react: { useRef: current => ({ current }), useLayoutEffect: (effect) => effect() },
             "@/app/contexts/TranscriptContext": { useTranscript: () => ({
                 transcriptItems, addTranscriptBreadcrumb() {}, addTranscriptMessage: (...args) => messages.push(args),
                 updateTranscriptMessage: (...args) => updates.push(args), updateTranscriptItemStatus: (...args) => statuses.push(args),
@@ -142,7 +154,10 @@ function eventFixture(telemetryOverrides = {}, transcriptItems = [], handlerOver
     })
     const handler = api.useHandleServerEvent({
         selectedAgentName: "greeter",
-        selectedAgentConfigSet: [{ name: "greeter" }, { name: "elastic" }, { name: "IRS", instructions: "Use IRS sources." }, { name: "Medicare" }],
+        selectedAgentConfigSet: [
+            { name: "greeter", downstreamAgents: [{ name: "elastic" }, { name: "IRS" }, { name: "Medicare" }] },
+            { name: "elastic" }, { name: "IRS", instructions: "Use IRS sources." }, { name: "Medicare" }, { name: "VA" },
+        ],
         sendClientEvent: event => sent.push(event),
         setSelectedAgentName() {},
         ...handlerOverrides,
@@ -194,6 +209,22 @@ test("spoken transfer response waits for the caller's playback and can acknowled
     assert.equal(sent.length, 1)
     assert.equal(sent[0].item.call_id, "handoff")
     assert.equal(JSON.parse(sent[0].item.output).did_transfer, false)
+})
+
+test("transfers reject self, off-list, and partial destinations even with matching context", () => {
+    for (const destination of ["greeter", "VA", "Medicare Advantage expert", "..."]) {
+        const { handler, sent } = eventFixture({}, [], {
+            setSelectedAgentName() { assert.fail("Unavailable destinations must never switch agents") },
+        })
+        handler({ type: "response.done", response: { output: [{
+            type: "function_call", name: "transferAgents", call_id: "unavailable",
+            arguments: JSON.stringify({ destination_agent: destination, conversation_context: "Medicare and VA came up." }),
+        }] } })
+        assert.deepEqual(sent.map(event => event.type), ["conversation.item.create", "response.create"])
+        const result = JSON.parse(sent[0].item.output)
+        assert.equal(result.did_transfer, false)
+        assert.deepEqual(result.available_agents, ["elastic", "IRS", "Medicare"])
+    }
 })
 
 test("an older transfer cannot take the caller away during a newer spoken turn", () => {
@@ -579,7 +610,7 @@ function voiceTransferFixture() {
         setSelectedAgentName: (name) => { props.selectedAgentName = name },
         autoConnect: false,
     }
-    let refIndex = 0, stateIndex = 0, serverHandler, receiveDirect, receiveGateway, notifyGatewayPlayback
+    let refIndex = 0, stateIndex = 0, serverHandler, receiveDirect, receiveGateway, notifyGatewayPlayback, notifyGatewayBufferedSpeech
     const timers = new Map()
     let timerId = 0
     const directTrack = { stop: () => { events.push("stop direct microphone") } }
@@ -591,8 +622,9 @@ function voiceTransferFixture() {
         close() { events.push("close direct microphone gate") },
         watchPlayback(onDrained) {
             const playback = {
-                completed: false, stopped: false, onDrained,
+                completed: false, stopped: false, audible: false, onDrained,
                 generationCompleted() { this.completed = true },
+                hasRecentPlayback() { return !this.stopped && this.audible },
                 stop() { this.stopped = true },
             }
             this.playback.push(playback)
@@ -624,6 +656,7 @@ function voiceTransferFixture() {
                         this.options = options
                         this.isAudioPlaying = false
                         receiveGateway = options.onEvent
+                        notifyGatewayBufferedSpeech = options.onBufferedSpeech
                         notifyGatewayPlayback = (isPlaying) => {
                             this.isAudioPlaying = isPlaying
                             options.onPlaybackChange?.(isPlaying)
@@ -705,8 +738,13 @@ function voiceTransferFixture() {
         defer: (...args) => serverHandler.deferAgentTransfer(...args),
         direct: (message) => receiveDirect(message),
         gateway: (message) => receiveGateway(message),
+        gatewayBufferedSpeech: () => notifyGatewayBufferedSpeech(),
         gatewayPlayback: (value) => notifyGatewayPlayback(value),
-        expire: () => [...timers.values()].sort((a, b) => b.delay - a.delay)[0].run(),
+        expire() {
+            const [id, timer] = [...timers.entries()].sort((a, b) => b[1].delay - a[1].delay)[0]
+            timers.delete(id)
+            timer.run()
+        },
     }
 }
 
@@ -728,6 +766,20 @@ test("cross-provider handoff releases the old call before opening one microphone
     render().hook.onToggleConnection()
     assert.ok(events.includes("close gateway"))
     assert.ok(events.includes("stop gateway microphone"))
+})
+
+test("switching direct agents keeps sending on the already open provider", async () => {
+    const { connect, events, props, render } = voiceTransferFixture()
+    await connect()
+    assert.equal(render().hook.canSend, true)
+    render().hook.selectVoiceAgent("Elastic")
+    assert.equal(props.selectedAgentName, "Elastic")
+    assert.equal(render().hook.canSend, true)
+    render().configure()
+    assert.equal(render().hook.canSend, true)
+    assert.ok(!events.includes("close direct"))
+    render().hook.onToggleConnection()
+    assert.equal(render().hook.canSend, false)
 })
 
 test("an OpenAI transfer waits for the matching output buffer to drain", async () => {
@@ -794,6 +846,29 @@ test("observed WebRTC playback drain releases the microphone when the provider o
     assert.ok(!fixture.directMessages.some(({ type }) => type === "output_audio_buffer.clear" || type === "response.cancel"))
 })
 
+test("fresh decoded WebRTC audio keeps the microphone and handoff gated after the fixed deadline", async () => {
+    const fixture = voiceTransferFixture()
+    await fixture.connect()
+    const { direct, microphone } = fixture
+    direct({ type: "response.created", response: { id: "long" } })
+    direct({ type: "output_audio_buffer.started", response_id: "long" })
+    direct({ type: "response.done", response: { id: "long", status: "completed", output: [
+        { type: "message", role: "assistant", content: [{ type: "output_audio" }] },
+    ] } })
+    const playback = microphone.playback[0]
+    playback.audible = true
+    let switched = 0
+    fixture.defer({ responseId: "long", hasAudio: true }, () => { switched++ }, () => assert.fail("Audio remains active"))
+    fixture.expire()
+    fixture.expire()
+    assert.equal(microphone.holding, true)
+    assert.equal(switched, 0)
+    assert.equal(fixture.render().hook.isVoiceSwitchPending, true)
+    playback.onDrained()
+    assert.equal(microphone.holding, false)
+    assert.equal(switched, 1)
+})
+
 test("OpenAI hands-free speech is accepted while the previous reply plays", async (t) => {
     for (const latePlaybackStart of [false, true]) {
         await t.test(latePlaybackStart ? "playback starts after response.done" : "playback is already active", async () => {
@@ -849,6 +924,20 @@ test("a Gateway interruption cancels the transfer even when the SDK stops playin
     assert.equal(cancelled, 1)
     assert.equal(fixture.props.selectedAgentName, "IRS")
     assert.equal(fixture.render().hook.sessionStatus, "CONNECTED")
+    assert.ok(!fixture.events.includes("close gateway"))
+})
+
+test("buffered Gateway speech cancels a model-driven transfer before closing its source connection", async () => {
+    const fixture = voiceTransferFixture()
+    await fixture.connect("IRS")
+    fixture.gatewayPlayback(true)
+    let cancelled = 0
+    fixture.defer({ responseId: "announcement", hasAudio: true }, () => assert.fail("Keep buffered speech on the source"), () => { cancelled++ })
+    fixture.gatewayBufferedSpeech()
+    fixture.gatewayPlayback(false)
+    await Promise.resolve()
+    assert.equal(cancelled, 1)
+    assert.equal(fixture.props.selectedAgentName, "IRS")
     assert.ok(!fixture.events.includes("close gateway"))
 })
 

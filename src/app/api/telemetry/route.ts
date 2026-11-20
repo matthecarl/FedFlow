@@ -64,6 +64,12 @@ import {
 // Debug mode configuration
 const DEBUG_MODE = process.env.DEBUG_TELEMETRY === "true"
 const CAPTURE_FULL_CONTENT = process.env.TELEMETRY_CAPTURE_FULL_CONTENT === "true"
+const MAX_TOKEN_COUNT = 67_108_864
+const EVENT_TYPES = new Set([
+    "token_usage", "tool_call", "realtime_fetch", "response_details", "full_transcript", "user_transcript",
+    "response.done", "session.created", "conversation.item.input_audio_transcription.completed", "error",
+    "conversation.item.create", "response.cancel", "session.update", "session.update.after.transfer",
+])
 
 // Debug logger implementation
 function debug(...args: any[]) {
@@ -268,6 +274,7 @@ function processTokenUsage(span: Span, eventData: Record<string, any>): void {
     const commonAttrs: Attributes = {
         ...voiceAttributes(eventData),
         [ATTR_GEN_AI_OPERATION_NAME]: "realtime",
+        "telemetry.source": "client",
     }
 
     // Record input tokens
@@ -401,18 +408,6 @@ function processUserTranscript(span: Span, eventData: Record<string, any>): void
     // Always mark these as from user
     span.setAttribute(ATTR_GEN_AI_TRANSCRIPT_SOURCE, "user")
     span.setAttribute(ATTR_GEN_AI_TRANSCRIPT_ROLE, "user")
-}
-
-/**
- * Process additional custom attributes
- */
-function processCustomAttributes(span: Span, attributes: Record<string, any>): void {
-    if (!attributes) return
-
-    for (const [key, value] of Object.entries(attributes)) {
-        if (key === ATTR_GEN_AI_SYSTEM || key === ATTR_GEN_AI_RESPONSE_MODEL || key === "gen_ai.provider.name") continue
-        setAttributeIfExists(span, key, value)
-    }
 }
 
 function processEventByType(span: Span, eventType: string, eventData: Record<string, any>): void {
@@ -552,9 +547,6 @@ class BatchTelemetryProcessor {
             debug(`Processing batch event: ${eventType}`)
             processEventByType(span, eventType, eventData)
 
-            // Process any additional custom attributes
-            processCustomAttributes(span, eventData.attributes)
-
             // Record processing duration
             span.setAttribute("processing.duration_ms", performance.now() - eventStartTime)
         })
@@ -640,6 +632,22 @@ function validateEventData(eventType: string, eventData: any): string | null {
             break
     }
 
+    if (eventType === "token_usage" || eventType === "response.done") {
+        const nested = eventData.response?.usage ?? eventData.usage
+        const input = eventData.inputTokenDetails ?? eventData.input_token_details ?? nested?.input_token_details
+        const output = eventData.outputTokenDetails ?? eventData.output_token_details ?? nested?.output_token_details
+        const cached = input?.cached_tokens_details
+        const counts = [
+            eventData.inputTokens, eventData.outputTokens, eventData.totalTokens,
+            eventData.inputTextTokens, eventData.inputAudioTokens, eventData.outputTextTokens, eventData.outputAudioTokens,
+            nested?.input_tokens, nested?.output_tokens, nested?.total_tokens,
+            input?.text_tokens, input?.audio_tokens, input?.cached_tokens, cached?.text_tokens, cached?.audio_tokens,
+            output?.text_tokens, output?.audio_tokens,
+        ]
+        if (counts.some((count) => count != null && (
+            !Number.isSafeInteger(count) || count < 0 || count > MAX_TOKEN_COUNT
+        ))) return "Token counts must be bounded non-negative integers"
+    }
     return null
 }
 
@@ -695,7 +703,7 @@ export async function POST(req: NextRequest) {
                     !item ||
                     typeof item !== "object" ||
                     typeof item.eventType !== "string" ||
-                    !/^[a-zA-Z0-9_.-]{1,100}$/.test(item.eventType) ||
+                    !EVENT_TYPES.has(item.eventType) ||
                     !item.eventData ||
                     typeof item.eventData !== "object" ||
                     Array.isArray(item.eventData),
@@ -798,9 +806,6 @@ export async function POST(req: NextRequest) {
             // Process event data using context
             context.with(ctx, () => {
                 processEventByType(span, eventType, eventData)
-
-                // Process any additional custom attributes
-                processCustomAttributes(span, eventData.attributes)
 
                 // Record processing duration
                 span.setAttribute("processing.duration_ms", performance.now() - startTime)

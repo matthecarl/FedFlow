@@ -1,6 +1,6 @@
 // Keep enough room for a caller to start speaking during a complete reply.
 const MAX_BUFFER_SECONDS = 60
-const SPEECH_RMS = 0.004
+const SPEECH_RMS = 0.006
 const SPEECH_SECONDS = 0.025
 const PREROLL_SECONDS = 0.3
 const VAD_TAIL_SECONDS = 0.6
@@ -29,9 +29,15 @@ class FedFlowMicrophone extends AudioWorkletProcessor {
                 this.reset()
             } else if (data === "release" && this.holding) {
                 this.holding = false
-                if (this.firstVoice < 0) {
+                if (this.firstVoice < 0 && this.voiceFrames === 0) {
                     this.reset()
                 } else {
+                    // Keep a speech onset that is still arriving at release,
+                    // even if it has not yet qualified as sustained speech.
+                    if (this.firstVoice < 0) {
+                        this.firstVoice = this.write - this.voiceFrames
+                        this.lastVoice = this.write - 1
+                    }
                     this.read = Math.max(this.read, this.firstVoice - this.preRoll)
                     this.replaying = true
                 }
@@ -58,14 +64,16 @@ class FedFlowMicrophone extends AudioWorkletProcessor {
             this.write++
         }
         if (energy >= length * SPEECH_RMS * SPEECH_RMS) {
-            if (this.firstVoice < 0) this.firstVoice = this.write - length
-            this.lastVoice = this.write - 1
             this.voiceFrames += length
-            if (this.holding && !this.notified && this.voiceFrames >= sampleRate * SPEECH_SECONDS) {
-                this.notified = true
-                this.port.postMessage("speech-buffered")
+            if (this.voiceFrames >= sampleRate * SPEECH_SECONDS) {
+                if (this.firstVoice < 0) this.firstVoice = this.write - this.voiceFrames
+                this.lastVoice = this.write - 1
+                if (this.holding && !this.notified) {
+                    this.notified = true
+                    this.port.postMessage("speech-buffered")
+                }
             }
-        }
+        } else this.voiceFrames = 0
         this.read = Math.max(this.read, this.write - this.buffer.length)
     }
 

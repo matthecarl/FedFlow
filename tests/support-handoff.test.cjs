@@ -4,6 +4,9 @@ const assert = require("node:assert/strict")
 const crypto = require("node:crypto")
 const load = require("./helpers/load-typescript.cjs")
 
+let workflowErrors
+test.before(async () => { workflowErrors = await import("workflow/errors") })
+
 const endpoint = "https://demo.example/api/support/handoffs"
 const secret = "fixture-only-signing-key-not-for-deployment"
 const input = {
@@ -14,9 +17,9 @@ const request = load("src/app/api/support/handoffs/request.ts", {
     dependencies: { "node:crypto": crypto },
     env: { HANDOFF_RECEIPT_SECRET: secret },
 })
-const post = (body = input) => new Request(endpoint, {
+const post = (body = input, key) => new Request(endpoint, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(key && { "Idempotency-Key": key }) },
     body: JSON.stringify(body),
 })
 const get = (receipt) => new Request(endpoint, {
@@ -27,6 +30,7 @@ function routeFixture(workflowApi, requestOverrides = {}) {
     return load("src/app/api/support/handoffs/route.ts", {
         dependencies: {
             "workflow/api": workflowApi,
+            "workflow/errors": workflowErrors,
             "@/app/workflows/support-handoff": { draftSupportHandoff() {} },
             "./request": { ...request, ...requestOverrides },
         },
@@ -80,11 +84,93 @@ test("invalid or expired receipts cannot look up a workflow run", async () => {
     }
 })
 
+test("a lost keyed start response and concurrent retries recover the canonical run and receipt", async () => {
+    const key = crypto.randomUUID()
+    const owners = new Map()
+    const runs = new Map()
+    const route = routeFixture({
+        async start(_workflow, _input, options) {
+            const { token, metadata, experimental_minRetention } = options.experimental_hook
+            assert.equal(experimental_minRetention, "25h")
+            assert.ok(token.startsWith("fedflow-handoff-start:v1:"))
+            assert.ok(!token.includes(input.transcript) && !token.includes(key))
+            assert.match(metadata, /^[A-Za-z0-9_-]{43}$/)
+            const owner = owners.get(token)
+            if (owner) throw new workflowErrors.HookConflictError(token, owner.runId, { kind: "start" })
+            const run = { runId: `wrun_${runs.size + 1}`, createdAt: Promise.resolve(new Date()), status: Promise.resolve("running") }
+            owners.set(token, { runId: run.runId, metadata: Promise.resolve(metadata) })
+            runs.set(run.runId, run)
+            if (runs.size === 1) throw new Error("The first admission acknowledgement was lost.")
+            return run
+        },
+        async getHookByToken(token) { return owners.get(token) },
+        getRun(runId) { return runs.get(runId) },
+    })
+
+    assert.equal((await route.POST(post(input, key))).status, 503)
+    const responses = await Promise.all([
+        route.POST(post(input, key)),
+        route.POST(post({ ...input, question: ` ${input.question} ` }, key.toUpperCase())),
+    ])
+    assert.ok(responses.every((response) => response.status === 202))
+    const receipts = await Promise.all(responses.map(async (response) => (await response.json()).receipt))
+    assert.equal(receipts[0], receipts[1])
+    assert.equal(request.verifyReceipt(receipts[0], secret), "wrun_1")
+    assert.equal(runs.size, 1)
+    assert.deepEqual(await (await route.GET(get(receipts[0]))).json(), { status: "pending" })
+
+    const edited = await route.POST(post({ ...input, question: "Which other office did he hold?" }, key))
+    assert.equal(edited.status, 409)
+    assert.equal(runs.size, 1)
+    const distinct = await route.POST(post(input, crypto.randomUUID()))
+    assert.equal(distinct.status, 202)
+    assert.equal(request.verifyReceipt((await distinct.json()).receipt, secret), "wrun_2")
+})
+
+test("missing and purged runs return a terminal response while outages remain retryable", async () => {
+    const receipt = request.issueReceipt("wrun_old", secret)
+    const getMissing = async (error) => routeFixture({
+        getRun() { return { status: Promise.reject(error) } },
+    }).GET(get(receipt))
+
+    const missing = await getMissing(new workflowErrors.WorkflowRunNotFoundError("wrun_old"))
+    const expired = await routeFixture({
+        getRun() {
+            return {
+                status: Promise.resolve("completed"),
+                get returnValue() { return Promise.reject(new workflowErrors.RunExpiredError("internal purge detail")) },
+            }
+        },
+    }).GET(get(receipt))
+    for (const response of [missing, expired]) {
+        assert.equal(response.status, 404)
+        assert.deepEqual(await response.json(), { error: "The handoff receipt is invalid or expired." })
+    }
+    assert.equal((await getMissing(new Error("internal outage detail"))).status, 503)
+})
+
+test("a retained start key cannot renew an expired receipt", async () => {
+    const key = crypto.randomUUID()
+    let fingerprint
+    const route = routeFixture({
+        async start(_workflow, _input, options) {
+            fingerprint = options.experimental_hook.metadata
+            throw new workflowErrors.HookConflictError(options.experimental_hook.token, "wrun_expired", { kind: "start" })
+        },
+        async getHookByToken() { return { runId: "wrun_expired", metadata: Promise.resolve(fingerprint) } },
+        getRun() { return { runId: "wrun_expired", createdAt: Promise.resolve(new Date(Date.now() - request.RECEIPT_LIFETIME_MS)) } },
+    })
+    const response = await route.POST(post(input, key))
+    assert.equal(response.status, 404)
+    assert.deepEqual(await response.json(), { error: "The handoff receipt is invalid or expired." })
+})
+
 test("invalid and oversized handoff submissions cannot start a workflow", async () => {
     const route = routeFixture({ start() { assert.fail("invalid input started a workflow") } })
     for (const value of [null, [], {}, { ...input, question: " " }, { ...input, transcript: "x".repeat(4001) }]) {
         assert.equal((await route.POST(post(value))).status, 400)
     }
+    assert.equal((await route.POST(post(input, "not-a-uuid"))).status, 400)
     const headers = { "content-type": "application/json" }
     assert.equal((await route.POST(new Request(endpoint, { method: "POST", headers, body: "broken" }))).status, 400)
     assert.equal((await route.POST(new Request(endpoint, { method: "POST", body: "raw" }))).status, 415)
@@ -148,6 +234,7 @@ function workflowFixture({
                 },
             },
             workflow: { FatalError, RetryableError },
+            linkifyjs: require("linkifyjs"),
             zod: { z: { object: validator, enum: validator, string: validator, array: validator } },
             "@/app/api/utility": {
                 bioGuideSearch: retrieval.bioGuideSearch,
@@ -212,11 +299,24 @@ test("empty evidence avoids generation; irrelevant evidence and invalid model li
         { ...draft, status: "insufficient_evidence" },
         { ...draft, sourceIds: ["uncited"] },
         { ...draft, nextStep: "Read https://example.com first." },
+        { ...draft, summary: "See bioguide.congress.gov/search/bio/A000041." },
+        { ...draft, nextStep: "Verify [the BioGuide record](/search/bio/A000041)." },
+        { ...draft, nextStep: "Verify [the record][bio].\n\n[bio]: /search/bio/A000041" },
+        { ...draft, summary: "He served in the U.S. Senate [S2]." },
     ]) {
         const result = await workflowFixture({ output }).draftSupportHandoff(input)
         assert.equal(result.status, "insufficient_evidence")
         assert.equal(result.sources.length, 0)
     }
+})
+
+test("draft text can cite any of its validated source IDs without introducing another link", async () => {
+    const output = { ...draft, summary: `${draft.summary} [S1]`, nextStep: "Check the listed record [S1] (service dates)." }
+    const result = await workflowFixture({ output }).draftSupportHandoff(input)
+    assert.equal(result.status, "grounded")
+    assert.equal(result.summary, output.summary)
+    assert.equal(result.nextStep, output.nextStep)
+    assert.equal(result.sources.length, 1)
 })
 
 test("search and provider outages fail the run with sanitized retryable errors", async () => {

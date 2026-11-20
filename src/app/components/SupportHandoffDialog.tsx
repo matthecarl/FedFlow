@@ -18,7 +18,7 @@ export function SupportHandoffDialog({ handoff }: { handoff: ReturnType<typeof u
     return (
         <dialog
             ref={dialogRef}
-            className="handoff-dialog"
+            className="handoff-dialog fs-exclude"
             aria-labelledby="handoff-heading"
             onCancel={(event) => {
                 event.preventDefault()

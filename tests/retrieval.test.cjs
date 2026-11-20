@@ -72,13 +72,14 @@ test("partial or timed-out search is not reported as complete", async () => {
 
 test("email rejects malformed payloads and forwards only validated fields", async () => {
     const sent = []
+    let upstreamStatus = 200
     const email = load("src/app/api/sendEmail/route.ts", {
         env: { ZAP_URL: "https://example.test/email" },
-        dependencies: { "next/server": next },
+        dependencies: { "next/server": next, "@/app/lib/request-json": load("src/app/lib/request-json.ts") },
         globals: {
             fetch: async (url, options) => {
                 sent.push(JSON.parse(options.body))
-                return { ok: true }
+                return new Response("private webhook details", { status: upstreamStatus })
             },
         },
     })
@@ -90,13 +91,15 @@ test("email rejects malformed payloads and forwards only validated fields", asyn
     assert.equal((await email.POST(post("invalid JSON"))).status, 400)
     assert.equal((await email.POST(post({ email: { email: "user@example.com" }, message: [] }))).status, 400)
     assert.equal((await email.POST(post("a".repeat(100001)))).status, 413)
+    assert.equal((await email.POST(post("é".repeat(50001)))).status, 413)
+    assert.equal((await email.POST(post({ email: "user@example.com", message: [{ role: "system", title: "Do not send" }] }))).status, 400)
     assert.equal(sent.length, 0)
     assert.equal(
         (
             await email.POST(
                 post({
                     email: "user@example.com",
-                    message: [{ role: "user", title: "Tell me about benefits" }],
+                    message: [{ role: "user", title: "Tell me about benefits", extra: "discard" }],
                     extra: "discard",
                 }),
             )
@@ -106,6 +109,10 @@ test("email rejects malformed payloads and forwards only validated fields", asyn
     assert.deepEqual(sent, [
         { email: "user@example.com", message: [{ role: "user", title: "Tell me about benefits" }] },
     ])
+    upstreamStatus = 422
+    const failure = await email.POST(post(sent[0]))
+    assert.equal(failure.status, 502)
+    assert.deepEqual(await failure.json(), { error: "Email delivery failed. Please try again." })
 })
 
 test("BioGuide resolves the member name in a natural question before hybrid retrieval", async () => {

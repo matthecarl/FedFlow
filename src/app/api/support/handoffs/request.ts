@@ -1,8 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 
 const MAX_BODY_BYTES = 32 * 1024
-const RECEIPT_LIFETIME_MS = 24 * 60 * 60 * 1000
+export const RECEIPT_LIFETIME_MS = 24 * 60 * 60 * 1000
 const RECEIPT_CONTEXT = "fedflow-handoff-receipt:v1:"
+const START_CONTEXT = "fedflow-handoff-start:v1:"
+const START_INPUT_CONTEXT = "fedflow-handoff-start-input:v1:"
 
 export type HandoffInput = {
     question: string
@@ -65,6 +67,20 @@ export async function readHandoffInput(request: Request): Promise<HandoffInput> 
 export function getReceiptSecret(): string | undefined {
     const secret = process.env.HANDOFF_RECEIPT_SECRET
     return secret && secret.trim().length >= 32 ? secret : undefined
+}
+
+export function startReservation(request: Request, input: HandoffInput, secret: string) {
+    const key = request.headers.get("idempotency-key")
+    if (key === null) return undefined
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(key)) {
+        throw new HandoffRequestError("The handoff submission key is invalid.")
+    }
+
+    // Claim one atomic slot per browser key and persist only a fingerprint of the draft.
+    const token = START_CONTEXT + createHmac("sha256", secret).update(START_CONTEXT).update(key.toLowerCase()).digest("base64url")
+    const payload = JSON.stringify([input.question, input.transcript])
+    const fingerprint = createHmac("sha256", secret).update(START_INPUT_CONTEXT).update(payload).digest("base64url")
+    return { token, fingerprint }
 }
 
 function receiptSignature(payload: string, secret: string): string {

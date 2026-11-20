@@ -1,4 +1,5 @@
 import { APICallError, generateText, NoObjectGeneratedError, Output } from "ai"
+import { find } from "linkifyjs"
 import { FatalError, RetryableError } from "workflow"
 import { z } from "zod"
 import type { HandoffInput } from "@/app/api/support/handoffs/request"
@@ -35,6 +36,11 @@ function insufficient(usage?: Usage): HandoffResult {
         sources: [],
         ...(usage && { usage }),
     }
+}
+
+function hasUnverifiedReferences(text: string, sources: ReadonlySet<string>): boolean {
+    if (/https?:\/\/|\]\(|^[ \t]*\[[^\]\r\n]+\]:/im.test(text) || find(text, "url").length) return true
+    return [...text.matchAll(/\[(S\d+)\]/gi)].some(([, id]) => !sources.has(id.toUpperCase()))
 }
 
 export async function draftSupportHandoff(input: HandoffInput): Promise<HandoffResult> {
@@ -127,14 +133,14 @@ async function generateHandoff(input: HandoffInput, evidence: Evidence[]): Promi
         const draft = generation.output
         if (draft.status === "insufficient_evidence") return insufficient(usage)
 
-        const ids = [...new Set(draft.sourceIds)]
-        const sources = ids.map((id) => evidence.find((source) => source.id === id))
+        const ids = new Set(draft.sourceIds)
+        const sources = [...ids].map((id) => evidence.find((source) => source.id === id))
         const summary = draft.summary.trim()
         const nextStep = draft.nextStep.trim()
         if (
-            !ids.length || sources.some((source) => !source)
+            !ids.size || sources.some((source) => !source)
             || !summary || summary.length > 900 || !nextStep || nextStep.length > 600
-            || /https?:\/\//i.test(summary) || /https?:\/\//i.test(nextStep)
+            || hasUnverifiedReferences(summary, ids) || hasUnverifiedReferences(nextStep, ids)
         ) return insufficient(usage)
 
         return {

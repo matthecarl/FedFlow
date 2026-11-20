@@ -1,13 +1,16 @@
 export type WebRtcPlaybackWatch = {
     generationCompleted: () => void
+    hasRecentPlayback: () => boolean
     stop: () => void
 }
 
 type PlaybackSample = { time: number; duration: number; rms: number }
 const DRAIN_SAMPLE_MS = 75
-const DRAIN_QUIET_SECONDS = 1.4
+// Leave room for ordinary pauses before inferring a missing provider stop.
+const DRAIN_QUIET_SECONDS = 2.2
 const AUDIBLE_RMS = 0.004
 const QUIET_RMS = 0.0015
+const RECENT_PLAYBACK_MS = 400
 
 /** Detect a quiet tail only after observing the reply's audio and generation completion. */
 export function watchWebRtcPlayback(readSample: () => PlaybackSample | null, onDrained: () => void): WebRtcPlaybackWatch {
@@ -16,6 +19,7 @@ export function watchWebRtcPlayback(readSample: () => PlaybackSample | null, onD
     let stopped = false
     let quietSince: number | undefined
     let previousTime: number | undefined
+    let lastAudibleAt: number | undefined
     let timer: ReturnType<typeof setTimeout>
 
     const stop = () => {
@@ -27,8 +31,12 @@ export function watchWebRtcPlayback(readSample: () => PlaybackSample | null, onD
         const sample = readSample()
         if (!sample || (previousTime !== undefined && sample.time <= previousTime)) {
             quietSince = undefined
+            lastAudibleAt = undefined
         } else {
-            if (sample.rms >= AUDIBLE_RMS) heardReply = true
+            if (sample.rms >= AUDIBLE_RMS) {
+                heardReply = true
+                lastAudibleAt = performance.now()
+            }
             if (doneGenerating && heardReply && sample.rms <= QUIET_RMS) {
                 // Gaps larger than the sampled window provide no evidence of
                 // continuous quiet, such as when Chrome throttles a hidden tab.
@@ -48,6 +56,9 @@ export function watchWebRtcPlayback(readSample: () => PlaybackSample | null, onD
     timer = setTimeout(poll, DRAIN_SAMPLE_MS)
     return {
         stop,
+        hasRecentPlayback() {
+            return !stopped && lastAudibleAt !== undefined && performance.now() - lastAudibleAt < RECENT_PLAYBACK_MS
+        },
         generationCompleted() {
             doneGenerating = true
             quietSince = undefined

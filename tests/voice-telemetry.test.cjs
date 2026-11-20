@@ -5,6 +5,7 @@ const load = require("./helpers/load-typescript.cjs")
 
 const { ATTR_GEN_AI_SYSTEM, ATTR_GEN_AI_RESPONSE_MODEL, ATTR_GEN_AI_TRANSCRIPT_FULL, METRIC_GEN_AI_CLIENT_TOKEN_USAGE } =
     load("src/app/lib/semconv.ts")
+const { sanitizeTelemetry } = load("src/app/lib/telemetry-safety.ts")
 
 function telemetryFixture(env = {}) {
     const spans = []
@@ -62,6 +63,8 @@ test("Gateway metrics and spans use the allowlisted model's actual provider", as
                 [ATTR_GEN_AI_SYSTEM]: "spoofed-provider",
                 [ATTR_GEN_AI_RESPONSE_MODEL]: "arbitrary-model",
                 "gen_ai.provider.name": "spoofed-provider",
+                "telemetry.source": "provider",
+                "http.url": "https://example.test/forged",
             },
         },
     })
@@ -70,11 +73,40 @@ test("Gateway metrics and spans use the allowlisted model's actual provider", as
     assert.equal(span.attributes[ATTR_GEN_AI_SYSTEM], "elevenlabs")
     assert.equal(span.attributes[ATTR_GEN_AI_RESPONSE_MODEL], model)
     assert.equal(span.attributes["gen_ai.provider.name"], undefined)
+    assert.equal(span.attributes["telemetry.source"], "client")
+    assert.equal(span.attributes["http.url"], undefined)
     assert.equal(metrics.find(({ name }) => name === METRIC_GEN_AI_CLIENT_TOKEN_USAGE).value, 4)
     for (const metric of metrics) {
         assert.equal(metric.attributes[ATTR_GEN_AI_SYSTEM], "elevenlabs")
         assert.equal(metric.attributes[ATTR_GEN_AI_RESPONSE_MODEL], model)
     }
+})
+
+test("unknown event types and malformed token counts cannot create spans or metrics", async () => {
+    const { post, spans, metrics } = telemetryFixture()
+    const invalidEvents = [
+        { eventType: "unregistered.metric", eventData: {} },
+        { eventType: "token_usage", eventData: { inputTokens: -4 } },
+        { eventType: "token_usage", eventData: { inputTokens: 1.5 } },
+        { eventType: "response.done", eventData: { response: { id: "response", usage: { output_tokens: "6" } } } },
+        { eventType: "token_usage", eventData: { usage: { input_tokens: 4, input_token_details: { cached_tokens: 100_000_000 } } } },
+    ]
+    for (const event of invalidEvents) assert.equal((await post(event)).status, 400)
+    assert.deepEqual(spans, [])
+    assert.deepEqual(metrics, [])
+})
+
+test("telemetry sanitization applies to every dotted segment and redacts gateway tokens", () => {
+    const fields = {
+        "gen_ai.transcript.full": "private fixture",
+        "gateway.token.value": "another private fixture",
+        detail: "token vcst_fixtureDemoKey123",
+    }
+    assert.deepEqual(JSON.parse(JSON.stringify(sanitizeTelemetry(fields))), { detail: "token [redacted]" })
+    assert.deepEqual(JSON.parse(JSON.stringify(sanitizeTelemetry(fields, true))), {
+        "gen_ai.transcript.full": "private fixture",
+        detail: "token [redacted]",
+    })
 })
 
 test("a mixed batch preserves per-event provider, default OpenAI, and transcript capture", async () => {

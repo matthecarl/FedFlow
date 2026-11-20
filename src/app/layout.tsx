@@ -43,7 +43,8 @@ export default function RootLayout({
                 {shouldInitRum ? (
                     <>
                         <Script
-                            src="https://unpkg.com/@elastic/apm-rum/dist/bundles/elastic-apm-rum.umd.min.js"
+                            src="https://unpkg.com/@elastic/apm-rum@5.17.5/dist/bundles/elastic-apm-rum.umd.min.js"
+                            integrity="sha384-YyLo165QDwDAAsqHcaHVbbhfXN8ipGVGEtf5FhN8SMTyUI1KGtpN/u0js8if451z"
                             strategy="beforeInteractive"
                             crossOrigin="anonymous"
                         />

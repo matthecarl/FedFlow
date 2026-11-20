@@ -17,11 +17,12 @@ function matches(actual: string, expected: string): boolean {
 }
 
 export function proxy(request: NextRequest) {
-    // Require a demo login on paid handoffs and Gateway token issuance even
-    // when the rest of the app is public.
-    const isHandoff = request.nextUrl.pathname.startsWith("/api/support/")
-    const isGatewayMint = /^\/api\/session\/gateway\/?$/.test(request.nextUrl.pathname)
-    if (isHandoff || isGatewayMint || process.env.DEMO_PASSWORD_ENABLED !== "false") {
+    // Require demo access for handoffs, voice credentials, email, and telemetry
+    // even when the rest of the app is public.
+    const { pathname } = request.nextUrl
+    const requiresAccess = pathname.startsWith("/api/support/")
+        || /^\/api\/(?:session(?:\/gateway)?|sendEmail|telemetry)\/?$/.test(pathname)
+    if (requiresAccess || process.env.DEMO_PASSWORD_ENABLED !== "false") {
         const password = process.env.DEMO_PASSWORD
         if (!password || password.trim().length < 16) {
             return new NextResponse("Demo access is not configured.", {
@@ -46,7 +47,7 @@ export function proxy(request: NextRequest) {
 
     // Browsers cache Basic credentials. Do not let another website spend them
     // on API requests, including search GETs, even while the password gate is disabled.
-    if (request.nextUrl.pathname.startsWith("/api/")) {
+    if (pathname.startsWith("/api/")) {
         const origin = request.headers.get("origin")
         if (
             request.headers.get("sec-fetch-site") === "cross-site" ||

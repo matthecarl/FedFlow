@@ -70,7 +70,7 @@ export class RealtimeResponseCoordinator {
         } else if (event.type === "error") {
             // Rejected creates have no response.done. Release only that request;
             // unrelated tool/session errors must not unlock an active response.
-            if (event.error?.event_id && event.error.event_id === this.active?.eventId &&
+            if (this.active?.id === null && event.error?.event_id && event.error.event_id === this.active.eventId &&
                 event.error.code !== "conversation_already_has_active_response") {
                 this.active = null
                 this.cancelRequested = false

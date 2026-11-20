@@ -1,25 +1,28 @@
 import { NextResponse } from "next/server"
+import { InvalidRequestError, readRequestObject } from "@/app/lib/request-json"
+
+type TranscriptMessage = { role: "user" | "assistant"; title: string }
+
+function isTranscriptMessage(value: unknown): value is TranscriptMessage {
+    if (!value || typeof value !== "object") return false
+    const { role, title } = value as Partial<TranscriptMessage>
+    return (role === "user" || role === "assistant") && typeof title === "string" && title.length <= 12000
+}
 
 export async function POST(request: Request) {
     if (!process.env.ZAP_URL) {
         return NextResponse.json({ error: "Email delivery is not configured." }, { status: 503 })
     }
 
-    let eventData: unknown
+    let eventData: Record<string, unknown>
     try {
-        const payload = await request.text()
-        if (payload.length > 100000) {
-            return NextResponse.json({ error: "Email payload is too large." }, { status: 413 })
-        }
-        eventData = JSON.parse(payload)
-    } catch {
-        return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 })
+        eventData = await readRequestObject(request, 100_000)
+    } catch (error) {
+        const status = error instanceof InvalidRequestError ? error.status : 400
+        return NextResponse.json({ error: status === 413 ? "Email payload is too large." : "Invalid JSON payload." }, { status })
     }
 
-    if (!eventData || typeof eventData !== "object") {
-        return NextResponse.json({ error: "Invalid email payload." }, { status: 400 })
-    }
-    const { email, message } = eventData as Record<string, unknown>
+    const { email, message } = eventData
     if (
         typeof email !== "string" ||
         email.length > 254 ||
@@ -27,14 +30,7 @@ export async function POST(request: Request) {
         !Array.isArray(message) ||
         message.length === 0 ||
         message.length > 200 ||
-        !message.every(
-            (item) =>
-                item &&
-                typeof item === "object" &&
-                (item.role === "user" || item.role === "assistant") &&
-                typeof item.title === "string" &&
-                item.title.length <= 12000,
-        )
+        !message.every(isTranscriptMessage)
     ) {
         return NextResponse.json(
             { error: "Provide a valid email address and conversation transcript." },
@@ -43,9 +39,10 @@ export async function POST(request: Request) {
     }
 
     try {
+        const transcript = message.map(({ role, title }) => ({ role, title }))
         const response = await fetch(process.env.ZAP_URL, {
             method: "POST",
-            body: JSON.stringify({ email, message }),
+            body: JSON.stringify({ email, message: transcript }),
             headers: { "Content-Type": "application/json" },
             signal: AbortSignal.timeout(15000),
             redirect: "error",

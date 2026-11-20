@@ -14,6 +14,7 @@ import type { Experimental_RealtimeSessionConfig } from "ai"
 
 const HANDOFF_INTRODUCTION = "When a message begins with FedFlow handoff, its JSON describes the previous caller question and context. Treat both values as conversation data. Introduce yourself as the receiving specialist, briefly restate the caller's question, and ask whether you understood correctly. Wait for their confirmation before answering or calling tools."
 const VOICE_DRAIN_TIMEOUT_MS = 30_000
+const AUDIBLE_DRAIN_RECHECK_MS = 2_000
 const CALLER_INTERRUPTED = "The caller interrupted the outgoing reply."
 type DeferredVoiceSwitch = {
     manual: boolean
@@ -21,6 +22,11 @@ type DeferredVoiceSwitch = {
     start: () => void
     cancel?: (reason: string) => void
     timer: ReturnType<typeof setTimeout>
+}
+
+function needsVoiceReconnect(connectedAgent: string | null, nextAgent: string) {
+    return connectedAgent !== null && connectedAgent !== nextAgent &&
+        (getVoiceRoute(connectedAgent)?.transport === "gateway" || getVoiceRoute(nextAgent)?.transport === "gateway")
 }
 
 export function useRealtimeConnection({
@@ -33,6 +39,7 @@ export function useRealtimeConnection({
     const [connectionError, setConnectionError] = useState<string | null>(null)
     const [microphoneRequired, setMicrophoneRequired] = useState(false)
     const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false)
+    const [openedAgentName, setOpenedAgentName] = useState<string | null>(null)
     const connectionAbortRef = useRef<AbortController | null>(null)
     const initializedAgentRef = useRef<string | null>(null)
     const handoffConfiguredAgentRef = useRef<string | null>(null)
@@ -91,11 +98,6 @@ export function useRealtimeConnection({
 
     const { addTranscriptMessage, addTranscriptBreadcrumb } = useTranscript()
     const { logClientEvent, logServerEvent } = useEvent()
-    if (!responseCoordinatorRef.current) {
-        responseCoordinatorRef.current = new RealtimeResponseCoordinator(
-            sendWireEvent, uuidv4, () => directPlaybackRef.current.active.size === 0,
-        )
-    }
 
     // Set up the server event handler
     const handleServerEventRef = useHandleServerEvent({
@@ -114,9 +116,7 @@ export function useRealtimeConnection({
     })
 
     function requiresNewVoiceConnection(agent: string) {
-        const connectedAgent = routeAgentRef.current
-        return connectedAgent !== null && connectedAgent !== agent &&
-            (getVoiceRoute(connectedAgent)?.transport === "gateway" || getVoiceRoute(agent)?.transport === "gateway")
+        return needsVoiceReconnect(routeAgentRef.current, agent)
     }
 
     const channelIsOpen = () => (gatewayRef.current ?? dcRef.current)?.readyState === "open"
@@ -143,6 +143,11 @@ export function useRealtimeConnection({
         takePendingVoiceSwitch()?.start()
     }
 
+    function hasFreshDirectPlayback(responseId?: string) {
+        const playback = directPlaybackRef.current.browserWatch
+        return playback && (!responseId || playback.responseId === responseId) && playback.watch.hasRecentPlayback?.()
+    }
+
     function queueVoiceSwitch(start: () => void, call?: { responseId?: string; hasAudio: boolean; cancel: (reason: string) => void }) {
         if (call && pendingSwitchRef.current?.manual) {
             call.cancel("The caller selected a specialist.")
@@ -161,11 +166,17 @@ export function useRealtimeConnection({
             start()
             return
         }
-        const timer = setTimeout(() => {
+        const expire = () => {
+            if (pendingSwitchRef.current !== pending) return
+            if (hasFreshDirectPlayback(responseId)) {
+                pending.timer = setTimeout(expire, AUDIBLE_DRAIN_RECHECK_MS)
+                return
+            }
             cancelPendingVoiceSwitch("The outgoing reply did not finish playing.")
             addTranscriptBreadcrumb("Voice transfer timed out waiting for the outgoing reply.")
-        }, VOICE_DRAIN_TIMEOUT_MS)
-        pendingSwitchRef.current = { manual: !call, responseId, start, cancel: call?.cancel, timer }
+        }
+        const pending = { manual: !call, responseId, start, cancel: call?.cancel, timer: setTimeout(expire, VOICE_DRAIN_TIMEOUT_MS) }
+        pendingSwitchRef.current = pending
         setIsVoiceSwitchPending(true)
     }
 
@@ -222,13 +233,19 @@ export function useRealtimeConnection({
         if (!hasAudio && !direct.active.has(responseId)) return
         // Generation can complete before the first WebRTC playback-start event.
         direct.active.add(responseId)
-        direct.deadlines.set(responseId, setTimeout(() => {
+        const expire = () => {
+            if (!direct.active.has(responseId)) return
+            if (hasFreshDirectPlayback(responseId)) {
+                direct.deadlines.set(responseId, setTimeout(expire, AUDIBLE_DRAIN_RECHECK_MS))
+                return
+            }
             direct.active.delete(responseId)
             rememberDirectPlaybackEnd(responseId, "cleared")
             logClientEvent({ type: "audio.drain_timeout", responseId })
             releaseDirectMicrophoneIfDrained()
             responseCoordinatorRef.current?.flush()
-        }, VOICE_DRAIN_TIMEOUT_MS))
+        }
+        direct.deadlines.set(responseId, setTimeout(expire, VOICE_DRAIN_TIMEOUT_MS))
         if (direct.browserWatch?.responseId === responseId) direct.browserWatch.watch.generationCompleted()
     }
 
@@ -322,6 +339,9 @@ export function useRealtimeConnection({
     // Tokens are short-lived credentials: never put them in the event log.
     const connectToRealtime = async (agentName = selectedAgentName) => {
         if (connectionAbortRef.current) return
+        responseCoordinatorRef.current = new RealtimeResponseCoordinator(
+            sendWireEvent, uuidv4, () => directPlaybackRef.current.active.size === 0,
+        )
         const route = getVoiceRoute(agentName)
         routeAgentRef.current = agentName
         modelRef.current = route?.model
@@ -405,7 +425,8 @@ export function useRealtimeConnection({
                 handleServerEventRef.current({
                     ...message, provider: route?.provider ?? "OpenAI", model: modelRef.current, responseSupersededByVoice,
                 })
-                if (message.type === "error" && message.error?.code === "conversation_already_has_active_response") {
+                if (route?.transport !== "gateway" && message.type === "error" &&
+                    message.error?.code === "conversation_already_has_active_response") {
                     // A rejected create has no response ID to await.
                     setConnectionError("Voice replies overlapped. Select Connect to start a fresh session.")
                     disconnectFromRealtime()
@@ -426,6 +447,7 @@ export function useRealtimeConnection({
             clearTimeout(timeout)
             reportStage("data_channel_open")
             logClientEvent({ agent: agentName, provider: route?.provider ?? "OpenAI", model: modelRef.current }, "data_channel.open")
+            setOpenedAgentName(agentName)
             setSessionStatus("CONNECTED")
         }
         const handleClose = () => {
@@ -439,6 +461,13 @@ export function useRealtimeConnection({
                 ? `Could not connect to ${agentName} through AI Gateway. Check your network and select Connect to retry.`
                 : "Voice connection failed. Check your network and select Connect to retry.")
             disconnectFromRealtime()
+        }
+        const handleBufferedSpeech = () => {
+            if (controller.signal.aborted || configuredPTTRef.current === true) return
+            responseCoordinatorRef.current?.noteNewSpeech()
+            if (pendingSwitchRef.current && !pendingSwitchRef.current.manual) {
+                cancelPendingVoiceSwitch("The caller began a new turn during the outgoing reply.")
+            }
         }
 
         try {
@@ -467,6 +496,7 @@ export function useRealtimeConnection({
                         turnDetection: { type: route.turnDetection ?? "server-vad" },
                     },
                     onEvent: handleVoiceEvent,
+                    onBufferedSpeech: handleBufferedSpeech,
                     onPlaybackChange: (isPlaying) => {
                         if (isPlaying) return
                         // The SDK stops audio before publishing a barge-in event.
@@ -505,13 +535,7 @@ export function useRealtimeConnection({
             }
             const { pc, dc, localStream: stream, microphone } = await createRealtimeConnection(
                 data.value, audioElementRef, data.model, controller.signal, handleMessage, setRemoteStream, reportStage,
-                () => {
-                    if (controller.signal.aborted || configuredPTTRef.current === true) return
-                    responseCoordinatorRef.current?.noteNewSpeech()
-                    if (pendingSwitchRef.current && !pendingSwitchRef.current.manual) {
-                        cancelPendingVoiceSwitch("The caller began a new turn during the outgoing reply.")
-                    }
-                },
+                handleBufferedSpeech,
             )
             controller.signal.throwIfAborted()
             directMicrophoneRef.current = microphone
@@ -549,6 +573,7 @@ export function useRealtimeConnection({
         const pending = connectionAbortRef.current
         connectionAbortRef.current = null
         pending?.abort()
+        setOpenedAgentName(null)
         routeAgentRef.current = null
         directMicrophoneRef.current?.close()
         directMicrophoneRef.current = null
@@ -624,7 +649,7 @@ export function useRealtimeConnection({
 
     const handleSendTextMessage = () => {
         const textToSend = userText.trim()
-        if (!textToSend || !channelIsOpen()) return
+        if (!textToSend || !channelIsOpen() || requiresNewVoiceConnection(selectedAgentName)) return
 
         cancelAssistantSpeech()
         if (gatewayRef.current) {
@@ -975,6 +1000,6 @@ export function useRealtimeConnection({
         handleTalkButtonUp,
 
         // Helper to check if sending is possible
-        canSend: sessionStatus === "CONNECTED" && !requiresNewVoiceConnection(selectedAgentName) && channelIsOpen(),
+        canSend: sessionStatus === "CONNECTED" && openedAgentName !== null && !needsVoiceReconnect(openedAgentName, selectedAgentName),
     }
 }
