@@ -6,6 +6,9 @@ import { SessionStatus, TranscriptItem } from "@/app/types"
 import Image from "next/image"
 import { redactEventData } from "./Events"
 import { useTranscript } from "@/app/contexts/TranscriptContext"
+import { remarkTranscriptLinks } from "@/app/lib/transcript-links"
+
+const transcriptLinkPlugins = [remarkTranscriptLinks]
 
 export interface TranscriptProps {
     userText: string
@@ -105,6 +108,7 @@ function Transcript({ userText, setUserText, onSendMessage, canSend, sessionStat
                                         </div>
                                         <div className={`mt-1 whitespace-pre-wrap leading-relaxed ${messageStyle}`}>
                                             <ReactMarkdown
+                                                remarkPlugins={!isUser && item.status === "DONE" ? transcriptLinkPlugins : undefined}
                                                 components={{
                                                     a: ({ ...props }) => (
                                                         <a

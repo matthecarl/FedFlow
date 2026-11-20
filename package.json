@@ -45,6 +45,7 @@
         "babel-plugin-react-compiler": "^1.0.0",
         "formdata-node": "^6.0.3",
         "husky": "^9.1.7",
+        "linkifyjs": "4.4.0",
         "next": "^16.3.4",
         "openai": "^4.86.1",
         "perf_hooks": "^0.0.1",
@@ -60,6 +61,7 @@
     },
     "devDependencies": {
         "@eslint/eslintrc": "^3",
+        "@types/mdast": "4.0.4",
         "@types/node": "^20",
         "@types/react": "^19",
         "@types/react-dom": "^19",

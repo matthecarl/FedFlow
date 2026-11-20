@@ -21,6 +21,7 @@ function renderTranscript(item) {
         "next/image": require("next/image"),
         "react-markdown": { default: () => { throw new Error("Architecture rendering must not depend on model Markdown") } },
         "@/app/contexts/TranscriptContext": { useTranscript: () => ({ transcriptItems: [item], toggleTranscriptItemExpand() {} }) },
+        "@/app/lib/transcript-links": { remarkTranscriptLinks: () => { throw new Error("Architecture rendering must not depend on transcript links") } },
         "./Events": { redactEventData: (_key, value) => value },
     }
     const context = { exports: {}, require: (name) => { assert.ok(name in dependencies, name); return dependencies[name] } }
