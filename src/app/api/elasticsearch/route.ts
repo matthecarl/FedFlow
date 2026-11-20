@@ -1,9 +1,6 @@
 import { NextRequest } from "next/server"
-import { handleSearch } from "../utility"
+import { handleSearch, searchLabs } from "../utility"
 
 export async function GET(request: NextRequest) {
-    return handleSearch(request, {
-        index: "search-labs-blogs",
-        semanticField: "body_semantic",
-    })
+    return handleSearch(request, searchLabs)
 }

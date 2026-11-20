@@ -31,7 +31,7 @@ test("demo gate fails closed when password is absent, empty, whitespace, or weak
 test("missing, malformed, incorrect credentials cannot access pages or APIs", () => {
     const { proxy } = gate()
     for (const value of ["", "Bearer anything", "Basic !!!", "Basic ", authorization("demo:wrong"), authorization(`admin:${password}`), authorization(`demo:${password}extra`)]) {
-        for (const path of ["/", "/api/session", "/api/elasticsearch?q=test"]) {
+        for (const path of ["/", "/api/session", "/api/elasticsearch?q=test", "/api/support/handoffs"]) {
             const response = proxy(request(path, { authorization: value }))
             assert.equal(response.status, 401)
             assert.match(response.headers.get("www-authenticate"), /^Basic realm="FedFlow demo"/)
@@ -69,8 +69,11 @@ test("preflight and internal-looking headers do not bypass credential checking",
 
 test("the Next matcher protects API, data, static, image, and dotted paths", () => {
     const { config } = gate()
-    for (const url of ["/", "/api/session", "/api/agent-builder/events", "/api/elasticsearch?q=test", "/_next/data/build/index.json", "/_next/static/chunks/app.js", "/_next/image?url=%2Fimage.png&w=100&q=75", "/favicon.ico", "/private.json", "/error-test"]) {
+    for (const url of ["/", "/api/session", "/api/agent-builder/events", "/api/elasticsearch?q=test", "/api/support/handoffs", "/_next/data/build/index.json", "/_next/static/chunks/app.js", "/_next/image?url=%2Fimage.png&w=100&q=75", "/favicon.ico", "/private.json", "/error-test", "/.well-known/workflow/v1/webhook/unused", "/.well-known/workflow/v1/flow-extra", "/foo/.well-known/workflow/v1/flow"]) {
         assert.equal(unstable_doesMiddlewareMatch({ config, nextConfig: {}, url }), true, url)
+    }
+    for (const url of ["/.well-known/workflow/v1/flow", "/.well-known/workflow/v1/flow/?retry=1"]) {
+        assert.equal(unstable_doesMiddlewareMatch({ config, nextConfig: {}, url }), false, url)
     }
 })
 
@@ -98,6 +101,15 @@ test("disabled password gate still blocks cross-origin API requests", () => {
         }
     }
     assert.equal(proxy(request("/api/session", { origin: "https://demo.example" }, "POST")).headers.get("x-middleware-next"), "1")
+})
+
+test("handoffs require demo access when the general password gate is disabled", () => {
+    const { proxy } = gate({ DEMO_PASSWORD: password, DEMO_PASSWORD_ENABLED: "false" })
+    for (const method of ["GET", "POST"]) {
+        assert.equal(proxy(request("/api/support/handoffs", {}, method)).status, 401)
+        assert.equal(proxy(request("/api/support/handoffs", { authorization: authorization(), origin: "https://other.example" }, method)).status, 403)
+        assert.equal(proxy(request("/api/support/handoffs", { authorization: authorization() }, method)).headers.get("x-middleware-next"), "1")
+    }
 })
 
 test("disabled password gate strips cached Authorization credentials before handlers", () => {

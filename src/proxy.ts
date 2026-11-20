@@ -17,8 +17,9 @@ function matches(actual: string, expected: string): boolean {
 }
 
 export function proxy(request: NextRequest) {
-    // Only an explicit false disables the gate; absent or misspelled values stay protected.
-    if (process.env.DEMO_PASSWORD_ENABLED !== "false") {
+    // Require a demo login for handoff generation even when the rest of the app is public.
+    const isHandoff = request.nextUrl.pathname.startsWith("/api/support/")
+    if (isHandoff || process.env.DEMO_PASSWORD_ENABLED !== "false") {
         const password = process.env.DEMO_PASSWORD
         if (!password || password.trim().length < 16) {
             return new NextResponse("Demo access is not configured.", {
@@ -26,7 +27,7 @@ export function proxy(request: NextRequest) {
                 headers: privateHeaders,
             })
         }
-    
+
         const authorization = request.headers.get("authorization") || ""
         const basic = /^Basic ([A-Za-z0-9+/]+={0,2})$/i.exec(authorization)
         const supplied = basic ? Buffer.from(basic[1], "base64").toString("utf8") : ""
@@ -68,5 +69,7 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-    matcher: "/:path*",
+    // The SDK's queue callback uses Vercel's consumer authentication. Keep all
+    // app routes and unused Workflow webhook paths behind the demo gate.
+    matcher: "/((?!\\.well-known/workflow/v1/flow/?$).*)",
 }

@@ -66,12 +66,13 @@ interface SearchOptions {
     lexicalFields?: string[]
     nameFields?: string[]
     size?: number
+    requestTimeout?: number
 }
 
 // Query the public semantic_text interface, rather than its internal nested vector paths.
 async function searchDocuments(
     query: string,
-    { index, semanticField, lexicalFields, nameFields, size = 3 }: SearchOptions,
+    { index, semanticField, lexicalFields, nameFields, size = 3, requestTimeout }: SearchOptions,
 ) {
     const sourceFields = [
         "id",
@@ -117,16 +118,22 @@ async function searchDocuments(
               },
           }
         : semantic
-    return getSearchClient().search<SearchDocument>({
-        index,
-        size,
-        retriever,
-        _source: sourceFields,
-        highlight: {
-            fields: { [semanticField]: { number_of_fragments: 2, order: "score" } },
+    return getSearchClient().search<SearchDocument>(
+        {
+            index,
+            size,
+            retriever,
+            _source: sourceFields,
+            highlight: {
+                fields: { [semanticField]: { number_of_fragments: 2, order: "score" } },
+            },
         },
-    })
+        requestTimeout === undefined ? undefined : { requestTimeout },
+    )
 }
+
+// Share the exact Elastic corpus and retrieval strategy across live voice and handoff drafting.
+const searchLabs = { index: "search-labs-blogs", semanticField: "body_semantic" }
 
 async function handleSearch(request: NextRequest, options: SearchOptions) {
     const query = request.nextUrl.searchParams.get("q")?.trim()
@@ -201,4 +208,4 @@ async function collectWebRTCStats(peerConnection: { getStats: () => any }) {
 }
 
 export type { SearchResult }
-export { handleSearch, extractBodyContentAndUrls, collectWebRTCStats }
+export { handleSearch, searchDocuments, searchLabs, extractBodyContentAndUrls, collectWebRTCStats }

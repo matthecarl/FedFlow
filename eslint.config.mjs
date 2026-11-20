@@ -4,7 +4,7 @@ import nextTypescript from "eslint-config-next/typescript"
 
 const config = [
     // Keep this near the top so tooling doesn't waste time in generated output.
-    { ignores: [".next/**", "node_modules/**"] },
+    { ignores: [".next/**", "node_modules/**", "src/app/.well-known/workflow/**", ".workflow-data/**"] },
     eslint.configs.recommended,
     ...nextCoreWebVitals,
     ...nextTypescript,
