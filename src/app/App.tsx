@@ -14,7 +14,7 @@ import { SupportHandoffDialog } from "./components/SupportHandoffDialog"
 import { useAgentSelection } from "./hooks/useAgentSelection"
 import { useRealtimeConnection } from "./hooks/useRealtimeConnection"
 import { useEventsPaneState } from "./hooks/useEventsPaneState"
-import { useSupportHandoff } from "./hooks/useSupportHandoff"
+import { SUPPORT_AGENT, useSupportHandoff } from "./hooks/useSupportHandoff"
 import { useTranscript } from "./contexts/TranscriptContext"
 
 // Loading component for Suspense
@@ -137,7 +137,7 @@ function Logic() {
                 isEventsPaneExpanded={isEventsPaneExpanded}
                 sessionStatus={sessionStatus}
                 selectedAgentName={selectedAgentName}
-                canDraftHandoff={selectedAgentName === "Elastic" && handoff.canDraft}
+                canDraftHandoff={selectedAgentName === SUPPORT_AGENT && handoff.canDraft}
                 hasHandoffRun={handoff.hasRun}
                 onDraftHandoff={handoff.openCall}
                 onViewHandoff={handoff.view}

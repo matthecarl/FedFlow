@@ -71,8 +71,8 @@ function Transcript({ userText, setUserText, onSendMessage, canSend, sessionStat
                 <div ref={transcriptRef} className="transcript-scroll" role="log" aria-label="Conversation transcript">
                     {!transcriptItems.some((item) => !item.isHidden) && (
                         <div className="conversation-empty">
-                            <h1>{prompts ? <>Elastic support,<br /><span>by voice.</span></> : "Ask a specialist"}</h1>
-                            {prompts && <p className="empty-description">Talk through an issue, then use the conversation to draft a cited handoff for the next engineer.</p>}
+                            <h1>{prompts ? <>Congressional biographies,<br /><span>by voice.</span></> : "Ask a specialist"}</h1>
+                            {prompts && <p className="empty-description">Ask BioGuide about a member’s public congressional record. Use the conversation to draft a cited handoff for the next researcher.</p>}
                             <p className="empty-connection" role="status">{sessionStatus === "CONNECTING" ? "Allow microphone access when asked." : sessionStatus === "CONNECTED" ? "Say or type your first question." : "Select Connect to start a call."}</p>
                         </div>
                     )}

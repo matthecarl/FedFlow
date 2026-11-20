@@ -1,6 +1,6 @@
 # FedFlow architecture
 
-FedFlow connects a Next.js support interface on Vercel to an existing Elasticsearch knowledge base. Voice and typed conversation use OpenAI Realtime. A separate, reviewer-approved handoff uses Vercel AI SDK, AI Gateway, and Workflows.
+FedFlow connects a Next.js research interface on Vercel to an existing Elasticsearch knowledge base. Voice and typed conversation use OpenAI Realtime. A separate, reviewer-approved handoff uses Vercel AI SDK, AI Gateway, and Workflows.
 
 ## Conversation and retrieval
 
@@ -25,14 +25,14 @@ flowchart LR
 
 The standard OpenAI and Elasticsearch API keys remain server-side. The browser uses a short-lived OpenAI credential. Typed messages share the Realtime connection and currently require the same microphone permission as voice. The browser executes retrieval tool calls through the server; OpenAI does not connect directly to Elasticsearch.
 
-The assessment uses the existing `search-labs-blogs` index and its `body_semantic` field. The other specialist routes read their configured indices on the same external service. The app does not crawl source sites, populate indices, or replace Elasticsearch ingestion and relevance management.
+The assessment uses the existing congressional `person` index and its `profileText_semantic` field. The other specialist routes read their configured indices on the same external service. The app does not crawl source sites, populate indices, or replace Elasticsearch ingestion and relevance management.
 
 ## Durable support handoff
 
 ```mermaid
 flowchart LR
   Browser[Browser: approved excerpt]
-  Elastic[External Elasticsearch: Search Labs]
+  Elastic[External Elasticsearch: congressional biographies]
   DraftModel[OpenAI: GPT-5 mini]
   subgraph Vercel
     API[Functions: start and read handoff]
@@ -51,7 +51,7 @@ flowchart LR
 
 The Workflow checkpoints the retrieval and generation steps and owns their bounded retry budget. The approved excerpt, retrieved evidence, and draft are part of the run data. A signed, expiring receipt stored in the browser tab lets it read the same run after a refresh. The recovered handoff is separate from the live audio session, which ends on reload.
 
-The server accepts only citation IDs from the retrieved evidence and returns their validated Elastic URLs. It rejects malformed drafts and can return insufficient evidence. A human must still verify that the recommendation is supported. The sample call uses synthetic text with the same live retrieval and generation path.
+The server accepts only citation IDs from the retrieved evidence and returns validated Biographical Directory URLs. It rejects malformed drafts and can return insufficient evidence. A human must still verify that the recommendation is supported. The sample call uses synthetic text with the same live retrieval and generation path.
 
 ## Vercel responsibilities
 
@@ -64,7 +64,7 @@ The server accepts only citation IDs from the retrieved evidence and returns the
 | Preview Deployments | Commit-specific verification before promotion |
 | Vercel Board — development only | Private task coordination and review evidence for coding agents |
 
-OpenAI Realtime media and conversation inference are outside the Gateway handoff path. Elasticsearch remains the knowledge source. Board belongs to the development process and does not hold runtime support conversations.
+OpenAI Realtime media and conversation inference are outside the Gateway handoff path. Elasticsearch remains the knowledge source. Board belongs to the development process. A separate OpenTelemetry path exports preview conversation spans to the configured Elastic APM destination.
 
 ## Access, failures, and validation
 

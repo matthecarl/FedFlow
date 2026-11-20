@@ -3,7 +3,7 @@ import Transcript from "./Transcript"
 import Events from "./Events"
 import AudioDancerComponent from "./AudioDancerComponent"
 import { SessionStatus } from "@/app/types"
-import { supportPrompts } from "@/app/hooks/useSupportHandoff"
+import { SUPPORT_AGENT, supportPrompts } from "@/app/hooks/useSupportHandoff"
 
 interface MainProps {
     userText: string
@@ -59,7 +59,7 @@ export function Main({
                     </div>
                     <button type="button" className="btn btn-soft" onClick={onSampleCall}>Try sample call</button>
                     {hasHandoffRun && <button type="button" className="btn btn-soft" onClick={onViewHandoff}>View handoff</button>}
-                    {selectedAgentName === "Elastic" && (
+                    {selectedAgentName === SUPPORT_AGENT && (
                         <button type="button" className="btn btn-neutral" onClick={onDraftHandoff} disabled={!canDraftHandoff}>Draft handoff</button>
                     )}
                 </div>
@@ -71,7 +71,7 @@ export function Main({
                     onSendMessage={onSendMessage}
                     canSend={canSend}
                     sessionStatus={sessionStatus}
-                    prompts={selectedAgentName === "Elastic" ? supportPrompts : undefined}
+                    prompts={selectedAgentName === SUPPORT_AGENT ? supportPrompts : undefined}
                 />
                 {isEventsPaneExpanded && <Events isExpanded={true} />}
             </div>

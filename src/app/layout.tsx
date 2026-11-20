@@ -6,12 +6,12 @@ import { FullStoryScript } from "./components/fullstory-script"
 export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", interactiveWidget: "resizes-content" }
 
 export const metadata: Metadata = {
-    title: "FedFlow | Voice support desk",
+    title: "FedFlow | BioGuide voice desk",
     description:
-        "Talk through an Elastic support question and draft a cited handoff for the next engineer.",
+        "Ask about public congressional biographies and draft a cited handoff for the next researcher.",
     openGraph: {
-        title: "FedFlow | Voice support desk",
-        description: "Turn an Elastic support call into a draft handoff with sources.",
+        title: "FedFlow | BioGuide voice desk",
+        description: "Turn a BioGuide voice conversation into a research handoff with public sources.",
         images: ["https://www.elastic.co/static-res/images/social_media_default.png"],
     },
 }

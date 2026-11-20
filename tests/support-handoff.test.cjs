@@ -6,7 +6,10 @@ const load = require("./helpers/load-typescript.cjs")
 
 const endpoint = "https://demo.example/api/support/handoffs"
 const secret = "fixture-only-signing-key-not-for-deployment"
-const input = { question: "Why did search stop?", transcript: "Caller: Search stopped after an upgrade." }
+const input = {
+    question: "What congressional offices did John Quincy Adams hold, and when?",
+    transcript: "Caller: What congressional offices did John Quincy Adams hold, and when?",
+}
 const request = load("src/app/api/support/handoffs/request.ts", {
     dependencies: { "node:crypto": crypto },
     env: { HANDOFF_RECEIPT_SECRET: secret },
@@ -31,7 +34,7 @@ function routeFixture(workflowApi, requestOverrides = {}) {
 }
 
 test("handoff start returns a private receipt; polling reads the same run without restarting it", async () => {
-    const completed = { status: "grounded", summary: "A call about search.", nextStep: "Review the index.", sources: [] }
+    const completed = { status: "grounded", summary: "A call about John Quincy Adams.", nextStep: "Review his BioGuide record.", sources: [] }
     let starts = 0
     let status = "running"
     const route = routeFixture({
@@ -96,12 +99,20 @@ test("invalid and oversized handoff submissions cannot start a workflow", async 
     assert.equal((await disabled.POST(post())).status, 503)
 })
 
-const link = "https://www.elastic.co/search-labs/blog/support-fixture"
-const hit = { title: "Elastic Search Labs", url: link, body_content: "Example evidence on index aliases." }
+const link = "https://bioguide.congress.gov/search/bio/A000041"
+const hit = {
+    _source: {
+        givenName: "John",
+        middleName: "Quincy",
+        familyName: "Adams",
+        usCongressBioId: "a000041",
+        profileText: "Served in the U.S. Senate from 1803 to 1808 and the U.S. House from 1831 to 1848.",
+    },
+}
 const draft = {
     status: "grounded",
-    summary: "The caller reported search stopped after an upgrade.",
-    nextStep: "Check whether the expected index alias is still present.",
+    summary: "John Quincy Adams served in the U.S. Senate from 1803 to 1808 and the U.S. House from 1831 to 1848.",
+    nextStep: "Check the linked BioGuide entry for the exact service dates.",
     sourceIds: ["S1"],
 }
 
@@ -116,6 +127,9 @@ function workflowFixture({
     class FatalError extends Error {}
     class RetryableError extends Error {}
     const validator = () => "validator"
+    const retrieval = load("src/app/api/utility.ts", {
+        dependencies: { "next/server": {}, "@elastic/elasticsearch": {} },
+    })
     const api = load("src/app/workflows/support-handoff.ts", {
         dependencies: {
             ai: {
@@ -136,12 +150,12 @@ function workflowFixture({
             workflow: { FatalError, RetryableError },
             zod: { z: { object: validator, enum: validator, string: validator, array: validator } },
             "@/app/api/utility": {
-                searchLabs: { index: "search-labs-blogs", semanticField: "body_semantic" },
-                extractBodyContentAndUrls: () => sources,
+                bioGuideSearch: retrieval.bioGuideSearch,
+                extractBioGuideResults: retrieval.extractBioGuideResults,
                 async searchDocuments(query, options) {
                     calls.push({ query, ...options })
                     if (searchError) throw searchError
-                    return response
+                    return { ...response, hits: { hits: sources } }
                 },
             },
         },
@@ -149,11 +163,18 @@ function workflowFixture({
     return { ...api, calls, FatalError, RetryableError }
 }
 
-test("handoff uses the shared live corpus, bounded inputs and server-resolved citations", async () => {
+test("handoff uses the shared BioGuide corpus and derives official citations from indexed member IDs", async () => {
     const fixture = workflowFixture({
         sources: [
-            { ...hit, url: "https://www.elastic.co.example/invalid", body_content: "Unexpected domain." },
-            { ...hit, body_content: "e".repeat(2_000) },
+            { _source: { ...hit._source, usCongressBioId: "A000041/extra", url: link } },
+            {
+                highlight: { profileText_semantic: ["U.S. Senate from 1803 to 1808"] },
+                _source: {
+                    ...hit._source,
+                    url: "https://bioguide.congress.gov.example/invalid",
+                    profileText: `U.S. Senate from 1803 to 1808. ${"x".repeat(1800)} U.S. House from 1831 to 1848. ${"x".repeat(1800)}`,
+                },
+            },
             hit,
         ],
         output: { ...draft, sourceIds: ["S1", "S1"] },
@@ -162,23 +183,30 @@ test("handoff uses the shared live corpus, bounded inputs and server-resolved ci
     assert.equal(result.status, "grounded")
     assert.equal(result.sources.length, 1)
     assert.equal(result.sources[0].url, link)
+    assert.equal(result.sources[0].title, "John Quincy Adams")
     assert.equal(result.sources[0].id, "S1")
     assert.equal(result.usage.costUsd, "0.000031")
     assert.equal(result.usage.inputTokens, 20)
-    assert.equal(fixture.calls[0].index, "search-labs-blogs")
-    assert.equal(fixture.calls[0].semanticField, "body_semantic")
+    assert.equal(fixture.calls[0].index, "person")
+    assert.equal(fixture.calls[0].semanticField, "profileText_semantic")
+    assert.ok(fixture.calls[0].nameFields.includes("middleName"))
+    assert.ok(fixture.calls[0].lexicalFields.includes("profileText"))
     assert.equal(fixture.calls[0].size, 3)
+    assert.equal(fixture.calls[0].requestTimeout, 8000)
     assert.equal(fixture.calls[0].query, input.question)
     assert.equal(fixture.calls[1].model, "openai/gpt-5-mini")
     assert.equal(fixture.calls[1].maxRetries, 0)
-    assert.equal(fixture.calls[1].prompt.evidence[0].excerpt.length, 1600)
+    assert.equal(fixture.calls[1].prompt.evidence[0].excerpt.length, 3000)
+    assert.match(fixture.calls[1].prompt.evidence[0].excerpt, /U.S. House from 1831 to 1848/)
     assert.equal(fixture.calls[1].prompt.evidence[0].url, undefined)
 })
 
 test("empty evidence avoids generation; irrelevant evidence and invalid model links safely abstain", async () => {
-    const noHits = workflowFixture({ sources: [] })
-    assert.equal((await noHits.draftSupportHandoff(input)).status, "insufficient_evidence")
-    assert.equal(noHits.calls.length, 1)
+    for (const sources of [[], [{ _source: { ...hit._source, usCongressBioId: undefined, url: link } }]]) {
+        const noHits = workflowFixture({ sources })
+        assert.equal((await noHits.draftSupportHandoff(input)).status, "insufficient_evidence")
+        assert.equal(noHits.calls.length, 1)
+    }
 
     for (const output of [
         { ...draft, status: "insufficient_evidence" },

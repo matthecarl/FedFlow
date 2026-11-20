@@ -117,6 +117,7 @@ test("BioGuide prioritizes all name terms and preserves middle names", async () 
                 familyName: "Adams",
                 usCongressBioId: "A000041",
                 profileText: "Congressional biography",
+                url: "https://example.test/a-misattributed-member",
             },
         },
     ])
@@ -125,6 +126,8 @@ test("BioGuide prioritizes all name terms and preserves middle names", async () 
     const body = await response.json()
     assert.equal(body.results[0].title, "John Quincy Adams")
     assert.equal(body.results[0].bioguide_id, "A000041")
+    assert.equal(body.results[0].url, "https://bioguide.congress.gov/search/bio/A000041")
+    assert.deepEqual(body.results[0].additional_urls, [body.results[0].url])
     assert.equal(calls.length, 1)
     assert.equal(calls[0].query.multi_match.operator, "and")
     assert.equal(calls[0].query.multi_match.type, "cross_fields")

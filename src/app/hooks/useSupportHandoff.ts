@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from "react"
 import type { TranscriptItem } from "@/app/types"
 
 const API = "/api/support/handoffs"
-const RECEIPT_KEY = "fedflow.handoff.receipt"
+const RECEIPT_KEY = "fedflow.bioguide.handoff.receipt"
+export const SUPPORT_AGENT = "BioGuide"
 export const HANDOFF_QUESTION_LIMIT = 600
 export const HANDOFF_TRANSCRIPT_LIMIT = 4000
 
 export const supportPrompts = [
-    { label: "Combine keyword and semantic search", question: "How can I combine keyword and semantic search in Elasticsearch using reciprocal rank fusion?" },
-    { label: "When to use ELSER", question: "What is ELSER, and when should I use it for semantic search?" },
+    { label: "John Quincy Adams’s congressional service", question: "What congressional offices did John Quincy Adams hold, and when?" },
+    { label: "Shirley Chisholm’s House service", question: "When did Shirley Chisholm serve in the U.S. House of Representatives?" },
 ] as const
 
 export type HandoffDraft = { question: string; transcript: string }
@@ -30,12 +31,13 @@ type HandoffRun =
 
 const sampleDraft: HandoffDraft = {
     question: supportPrompts[0].question,
-    transcript: "Caller: Keyword search works for exact product names, but it misses questions phrased in everyday language. How can I combine keyword and semantic search in Elasticsearch using reciprocal rank fusion?\n\nSpecialist: You want the next engineer to recommend a hybrid retrieval approach and point to relevant Elastic documentation. The team can test it on a small set of representative queries.",
+    transcript: `Caller: I’m checking a public biography for a reference request. ${supportPrompts[0].question}\n\nSpecialist: I’ll check the Biographical Directory of the United States Congress and include the source so the next researcher can verify the offices and dates.`,
 }
 
 export function draftFromTranscript(items: TranscriptItem[]): HandoffDraft | null {
-    // A new call starts a new transcript excerpt, while the screen keeps prior turns visible.
-    const lastAgentStart = items.findLastIndex((item) => item.type === "BREADCRUMB" && item.title === "Agent: Elastic")
+    // Other specialists remain available, so draft only from the current BioGuide segment.
+    const lastAgentStart = items.findLastIndex((item) => item.type === "BREADCRUMB" && item.title?.startsWith("Agent: "))
+    if (items[lastAgentStart]?.title !== `Agent: ${SUPPORT_AGENT}`) return null
     const turns = items.slice(lastAgentStart + 1).flatMap((item) => {
         if (item.type !== "MESSAGE" || item.isHidden || item.status !== "DONE") return []
         if (item.role !== "user" && item.role !== "assistant") return []

@@ -1,12 +1,12 @@
-# FedFlow — a cited handoff after an Elastic support call
+# FedFlow — a cited handoff after a congressional research call
 
-This is a realistic support-team scenario using public Elastic Search Labs material. A support engineer currently collects details over a call, searches the knowledge base, and writes a handoff that another engineer can verify. Repeating those steps delays escalations and often leaves the next engineer looking for the same evidence.
+A public affairs research desk fields questions about congressional service. An analyst takes the call, looks up the member in the Biographical Directory of the United States Congress, and writes a sourced handoff for a colleague. Repeating those steps slows down the briefing and leaves the next analyst to check the same dates.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  Caller[Support engineer] --> Search[Existing Elastic knowledge search]
+  Caller[Research analyst] --> Search[Biographical Directory search]
   Search --> Notes[Manual handoff notes]
 ```
 
@@ -15,7 +15,7 @@ flowchart LR
   Browser[Reviewer browser]
   Voice[OpenAI Realtime]
   DraftModel[OpenAI: GPT-5 mini]
-  Elastic[External Elasticsearch: Search Labs]
+  Elastic[External Elasticsearch: congressional biographies]
   subgraph Vercel
     App[Next.js app and authenticated API]
     Work[Workflow: search then draft]
@@ -30,7 +30,7 @@ flowchart LR
   Gateway -->|model request| DraftModel
 ```
 
-Vercel connects the support experience to an existing knowledge platform. Elasticsearch retains the index, ingestion, relevance configuration, and search permissions. The demo reads `search-labs-blogs` through `body_semantic` over authenticated HTTPS. Voice and typed conversation use a short-lived browser credential and a direct OpenAI Realtime connection. Vercel receives the explicitly approved text excerpt for the handoff. These are separate failure paths.
+Vercel connects the research workflow to an existing knowledge platform. Elasticsearch retains the index, ingestion, relevance configuration, and search permissions. The demo reads `person` through `profileText_semantic` over authenticated HTTPS. Voice and typed conversation use a short-lived browser credential and a direct OpenAI Realtime connection. Vercel receives the explicitly approved text excerpt for the handoff. These are separate failure paths.
 
 | Vercel choice | Role and trade-off |
 | --- | --- |
@@ -45,7 +45,7 @@ Development agents use Vercel Board for task coordination and review evidence. A
 ## Reviewer walkthrough
 
 1. Open the commit-specific preview from the deck and sign in as `demo` with the supplied test password. If the deployment is protected, use the private link shared from Vercel.
-2. Select **Connect**, grant microphone access, and ask one of the two example questions. Inspect the retrieved evidence, then select **Draft handoff**. **Try sample call** uses a synthetic excerpt and the same live dependencies without a microphone.
+2. Select **Connect**, grant microphone access, and ask “What congressional offices did John Quincy Adams hold, and when?” Inspect the retrieved evidence, then select **Draft handoff**. **Try sample call** uses a synthetic excerpt and the same live dependencies without a microphone.
 3. Review the excerpt and select **Generate handoff**. Refresh after submitting, then open the recovered draft and follow its citations. The live audio session is separate from the recovered draft.
 
 The public repository is [FedFlow](https://github.com/matthecarl/FedFlow/tree/codex/vercel-sa-demo). Keep the commit, preview URL, and actual run evidence together in the deck. Supply test credentials privately.
@@ -54,7 +54,7 @@ The public repository is [FedFlow](https://github.com/matthecarl/FedFlow/tree/co
 
 - Run `npm run lint`, `node --test tests/*.test.cjs`, and `npm run build`. Exercise valid sources, irrelevant and missing evidence, a fabricated citation, dependency timeout, and an expired or modified receipt. Prefer deterministic failure fixtures over forcing outages in the shared project.
 - In preview, record the same receipt recovering the same result after refresh. Capture actual Gateway model usage, per-draft cost, latency, and the observed Workflow stages. Evaluate voice and the sample separately. For a production pilot, time five paired manual and assisted handoffs, aim for 30% less median preparation time, and require zero unsupported citations in the reviewed sample. These are pilot targets.
-- Preview → validation → invited support pilot → cutover → rollback. Advance after an operator verifies access, grounded citations, recovery, and dependency health. Use a 5% then 25% canary before full cutover where Rolling Releases is available. Pause promotion on a citation or recovery regression. Roll back to the last eligible production deployment and verify the voice and sample paths.
+- Preview → validation → invited research pilot → cutover → rollback. Advance after an operator verifies access, grounded citations, recovery, and dependency health. Use a 5% then 25% canary before full cutover where Rolling Releases is available. Pause promotion on a citation or recovery regression. Roll back to the last eligible production deployment and verify the voice and sample paths.
 - Production requires individual SSO, authorized access to run records, credential rotation, explicit transcript retention and data residency review, and usage controls. Demo data must be public or synthetic. Confirm that a provider change meets the same citation and privacy requirements before promoting it.
 
 ## Development tooling

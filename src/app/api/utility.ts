@@ -19,16 +19,18 @@ interface SearchDocument {
 
 type SearchResult = estypes.SearchResponse<SearchDocument>
 
-function extractBodyContentAndUrls(data: SearchResult) {
+function extractBodyContentAndUrls(data: SearchResult, preferProfileText = false) {
     const regexToRemove =
         /Skip to Content\s*An official website of the United States government\s*Here’s how you know\s*The \.gov means it’s official\..*?Talk to the Veterans Crisis Line now\s*/gs
 
     return data.hits.hits.map((hit) => {
         const source = hit._source ?? {}
         const fragments = Object.values(hit.highlight ?? {}).flat()
-        const content = fragments.length
-            ? fragments.join("\n\n")
-            : (source.body_content ?? source.body ?? source.profileText ?? "")
+        const content = preferProfileText && source.profileText?.trim()
+            ? source.profileText
+            : fragments.length
+                ? fragments.join("\n\n")
+                : (source.body_content ?? source.body ?? source.profileText ?? "")
         return {
             source_id: source.id ?? hit._id ?? null,
             ...(source.usCongressBioId ? { bioguide_id: source.usCongressBioId } : {}),
@@ -40,6 +42,20 @@ function extractBodyContentAndUrls(data: SearchResult) {
             url: source.url ?? source.additional_urls?.[0] ?? null,
             additional_urls: source.additional_urls ?? [],
         }
+    })
+}
+
+function extractBioGuideResults(data: SearchResult) {
+    // A search highlight can include one office while omitting later terms.
+    return extractBodyContentAndUrls(data, true).flatMap((hit) => {
+        const bioGuideId = typeof hit.bioguide_id === "string" ? hit.bioguide_id.trim() : ""
+        if (!/^[A-Za-z][0-9]{6}$/.test(bioGuideId)) return []
+
+        // The indexed member ID identifies the official record. Build the
+        // citation from that ID so an indexed URL cannot redirect reviewers.
+        const id = bioGuideId.toUpperCase()
+        const url = `https://bioguide.congress.gov/search/bio/${id}`
+        return [{ ...hit, bioguide_id: id, url, additional_urls: [url] }]
     })
 }
 
@@ -74,6 +90,7 @@ async function searchDocuments(
     query: string,
     { index, semanticField, lexicalFields, nameFields, size = 3, requestTimeout }: SearchOptions,
 ) {
+    const transportOptions = requestTimeout === undefined ? undefined : { requestTimeout }
     const sourceFields = [
         "id",
         "usCongressBioId",
@@ -91,12 +108,15 @@ async function searchDocuments(
     if (nameFields?.length) {
         // Prefer a person whose own name matches every term over biographies
         // that merely mention that person. Broader questions retain hybrid search.
-        const nameMatches = await getSearchClient().search<SearchDocument>({
-            index,
-            size,
-            _source: sourceFields,
-            query: { multi_match: { query, fields: nameFields, type: "cross_fields", operator: "and" } },
-        })
+        const nameMatches = await getSearchClient().search<SearchDocument>(
+            {
+                index,
+                size,
+                _source: sourceFields,
+                query: { multi_match: { query, fields: nameFields, type: "cross_fields", operator: "and" } },
+            },
+            transportOptions,
+        )
         if (nameMatches.hits.hits.length || nameMatches.timed_out || nameMatches._shards.failed) return nameMatches
     }
     const semantic = {
@@ -128,14 +148,43 @@ async function searchDocuments(
                 fields: { [semanticField]: { number_of_fragments: 2, order: "score" } },
             },
         },
-        requestTimeout === undefined ? undefined : { requestTimeout },
+        transportOptions,
     )
 }
 
-// Share the exact Elastic corpus and retrieval strategy across live voice and handoff drafting.
 const searchLabs = { index: "search-labs-blogs", semanticField: "body_semantic" }
 
-async function handleSearch(request: NextRequest, options: SearchOptions) {
+// Keep voice lookup and durable handoff on the same congressional corpus and retrieval strategy.
+const bioGuideSearch: SearchOptions = {
+    index: "person",
+    semanticField: "profileText_semantic",
+    nameFields: [
+        "givenName",
+        "middleName",
+        "familyName",
+        "unaccentedGivenName",
+        "unaccentedMiddleName",
+        "unaccentedFamilyName",
+        "bioDisplayName",
+    ],
+    lexicalFields: [
+        "familyName",
+        "givenName",
+        "unaccentedMiddleName",
+        "unaccentedGivenName",
+        "unaccentedFamilyName",
+        "relationship.relatedTo.unaccentedGivenName",
+        "relationship.relatedTo.unaccentedFamilyName",
+        "bioDisplayName",
+        "profileText",
+    ],
+}
+
+async function handleSearch(
+    request: NextRequest,
+    options: SearchOptions,
+    extractResults = extractBodyContentAndUrls,
+) {
     const query = request.nextUrl.searchParams.get("q")?.trim()
     if (!query || query.length > 2000) {
         return NextResponse.json({ error: "Provide a search query between 1 and 2000 characters." }, { status: 400 })
@@ -146,7 +195,7 @@ async function handleSearch(request: NextRequest, options: SearchOptions) {
             return NextResponse.json({ error: "Search could not complete. Please try again." }, { status: 503 })
         }
         return NextResponse.json(
-            { results: extractBodyContentAndUrls(result) },
+            { results: extractResults(result) },
             { headers: { "Cache-Control": "no-store" } },
         )
     } catch (error) {
@@ -208,4 +257,4 @@ async function collectWebRTCStats(peerConnection: { getStats: () => any }) {
 }
 
 export type { SearchResult }
-export { handleSearch, searchDocuments, searchLabs, extractBodyContentAndUrls, collectWebRTCStats }
+export { handleSearch, searchDocuments, searchLabs, bioGuideSearch, extractBioGuideResults, extractBodyContentAndUrls, collectWebRTCStats }

@@ -28,7 +28,7 @@ export function SupportHandoffDialog({ handoff }: { handoff: ReturnType<typeof u
             <div className="handoff-heading">
                 <div className="min-w-0">
                     <h2 id="handoff-heading" className="font-mierb text-2xl leading-tight">Support handoff</h2>
-                    <p className="mt-1 text-sm text-slate-600">A draft for the next engineer</p>
+                    <p className="mt-1 text-sm text-slate-600">A cited draft for the next researcher</p>
                 </div>
                 <button type="button" className="btn btn-soft shrink-0" onClick={close} aria-label="Close handoff">Close</button>
             </div>
@@ -41,7 +41,7 @@ export function SupportHandoffDialog({ handoff }: { handoff: ReturnType<typeof u
                             Review the question and remove any sensitive details before generating a draft.
                         </p>
                         <label className="block text-sm font-semibold text-slate-800">
-                            Support question
+                            Research question
                             <input className="control mt-1.5" value={draft.question} maxLength={HANDOFF_QUESTION_LIMIT} required
                                 onChange={(event) => setDraft({ ...draft, question: event.target.value })} disabled={run.status === "starting"} />
                         </label>
@@ -61,7 +61,7 @@ export function SupportHandoffDialog({ handoff }: { handoff: ReturnType<typeof u
                 {run.status === "pending" && (
                     <div role="status" className="handoff-notice">
                         <p className="font-semibold">Drafting handoff…</p>
-                        <p className="mt-1 text-sm leading-relaxed">Checking the Elastic knowledge base. You can refresh this tab and return to the same draft.</p>
+                        <p className="mt-1 text-sm leading-relaxed">Checking public BioGuide records. You can refresh this tab and return to the same draft.</p>
                     </div>
                 )}
 
@@ -84,10 +84,10 @@ export function SupportHandoffDialog({ handoff }: { handoff: ReturnType<typeof u
                 {run.status === "complete" && (
                     <article className="space-y-4" aria-label="Completed support handoff">
                         <p role="status" className={run.result.status === "grounded" ? "handoff-notice font-semibold" : "handoff-warning font-semibold"}>
-                            {run.result.status === "grounded" ? "Handoff ready to review" : "Insufficient evidence to recommend a fix"}
+                            {run.result.status === "grounded" ? "Handoff ready to review" : "Insufficient evidence to answer"}
                         </p>
                         {run.result.summary && <section>
-                            <h3 className="mb-1 font-semibold">Issue summary</h3>
+                            <h3 className="mb-1 font-semibold">Research summary</h3>
                             <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{run.result.summary}</p>
                         </section>}
                         {run.result.nextStep && <section>
@@ -95,7 +95,7 @@ export function SupportHandoffDialog({ handoff }: { handoff: ReturnType<typeof u
                             <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{run.result.nextStep}</p>
                         </section>}
                         {run.result.sources.length > 0 && <section className="border-t border-slate-200 pt-3">
-                            <h3 className="font-semibold">Elastic sources</h3>
+                            <h3 className="font-semibold">Public congressional sources</h3>
                             <ul className="mt-1 list-disc space-y-1 pl-5 text-sm">
                                 {run.result.sources.filter((source) => source.url.startsWith("https://")).map((source) => (
                                     <li key={source.id}>

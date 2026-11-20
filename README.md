@@ -1,6 +1,6 @@
 # FedFlow — voice support and cited handoffs
 
-A Next.js application for voice and typed conversations through OpenAI Realtime, grounded in an existing Elasticsearch knowledge base. After an Elastic support conversation, a reviewer approves a transcript excerpt and requests a durable draft handoff with sources and a proposed next step.
+A Next.js application for voice and typed conversations through OpenAI Realtime, grounded in an existing Elasticsearch knowledge base. After a BioGuide research conversation, a reviewer approves a transcript excerpt and requests a durable draft handoff with official congressional sources and a proposed next step.
 
 ![Screenshot of the Realtime API Agents Demo](public/screenshot.png)
 
@@ -31,7 +31,7 @@ The active demo uses:
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000), sign in as `demo` with your `DEMO_PASSWORD`, then select **Connect** and allow microphone access. Elastic is the default specialist. If the browser blocks audio autoplay, select **Enable audio**. Microphone access requires localhost or HTTPS. **Try sample call** opens the handoff form without starting a voice session.
+Open [http://localhost:3000](http://localhost:3000), sign in as `demo` with your `DEMO_PASSWORD`, then select **Connect** and allow microphone access. BioGuide is the default specialist. If the browser blocks audio autoplay, select **Enable audio**. Microphone access requires localhost or HTTPS. **Try sample call** opens the handoff form without starting a voice session.
 
 Typed messages use the same OpenAI Realtime session as voice and currently require a working microphone. Denied/unavailable microphone access, or a connection timeout while waiting for the microphone, opens a recovery dialog. Allow access in browser/site and device settings, then use **Refresh and try again** or **I've enabled my microphone — reconnect**. Refreshing alone does not clear a saved permission denial. Use **Try sample call** to exercise the handoff without a microphone.
 
@@ -43,11 +43,11 @@ Specialist handoffs retain the Realtime conversation and explicitly pass `user_q
 
 ## Assessment walkthrough
 
-1. With the Elastic specialist selected, ask “How can I combine keyword and semantic search in Elasticsearch using reciprocal rank fusion?” or “What is ELSER, and when should I use it for semantic search?”
+1. With BioGuide selected, ask “What congressional offices did John Quincy Adams hold, and when?”
 2. Select **Draft handoff** and review the excerpt. Submit only demo material. Without a microphone, use **Try sample call** to supply a synthetic excerpt while using the same live search and model.
 3. Refresh the page while the draft is pending. The signed receipt in this browser tab identifies the same Workflow run. Open the sources in the completed draft and check the suggested next step against them.
 
-The browser sends only the excerpt you approve. Vercel Workflows checkpoints the post-call retrieval and generation steps. The AI SDK uses GPT-5 mini through AI Gateway and the application resolves citations against the existing Search Labs index. The live audio session is separate and ends when the page reloads. Drafts require human review before being used in support.
+The browser submits the approved excerpt to the handoff workflow. Vercel Workflows checkpoints the post-call retrieval and generation steps. The AI SDK uses GPT-5 mini through AI Gateway and the application resolves citations to official Biographical Directory profiles from the existing `person` index. The live audio session is separate and ends when the page reloads. Drafts require human review before being used in a research brief.
 
 See [assessment notes](docs/assessment.md) for architecture, evaluation, rollout, and the reviewer script.
 
@@ -81,7 +81,7 @@ VA, IRS, and BioGuide combine lexical and semantic retrieval using reciprocal ra
 First retrieval verification after starting the app:
 
 ```sh
-curl --user demo --fail-with-body 'http://localhost:3000/api/elasticsearch?q=What%20is%20semantic%20search%3F'
+curl --user demo --fail-with-body 'http://localhost:3000/api/bioguide?q=John%20Quincy%20Adams'
 ```
 
 Enter the demo password at curl's prompt. When `DEMO_PASSWORD_ENABLED=false`, omit `--user demo` to skip that prompt. A successful response contains a `results` array. Review the returned passages and sources as well as the HTTP status.
@@ -108,7 +108,7 @@ This checks the homepage, creates one short-lived Realtime token without printin
 Before recording:
 
 1. Open the app, select **Connect**, and confirm the status becomes **Connected** and the greeting appears and plays.
-2. Ask an Elastic question. Confirm retrieval returns relevant source material and a spoken answer.
+2. Ask the BioGuide question above. Confirm retrieval returns the correct member, an official congressional profile link, and a spoken answer.
 3. Type a follow-up and confirm the transcript and audio complete.
 4. Ask to switch to VA or another agent, then ask a relevant question. Check the answer and source links.
 5. Interrupt an answer; exercise push-to-talk and audio playback controls.
@@ -121,11 +121,13 @@ The conversation transcript includes messages and expandable tool details. The a
 
 Set the required environment variables on the intended Vercel project and environment. Preview and Production settings are separate. `NEXT_PUBLIC_*` settings are included at build time, so updating them requires a new deployment.
 
+The assessment preview exports OpenTelemetry over HTTP/protobuf to Elastic APM. Configure `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`, and `ENABLE_OTEL=true` for the assessment branch. `TELEMETRY_CAPTURE_FULL_CONTENT=true` includes sanitized transcript text on the exported spans. Use public or synthetic conversation material in the preview.
+
 Build and test a preview before promoting it. Verify the project, deployment URL, Git commit, domain alias, and runtime behavior; Vercel **Ready** means the deployment built, not that OpenAI or Elasticsearch requests work. This README describes configuration and validation, not the current deployment or cluster-upgrade status.
 
 ## Extending the agents
 
-Agent prompts, tool schemas, and tool implementations live in [`src/app/agentConfigs`](src/app/agentConfigs). Start with [`elasticBlogsAgent.ts`](src/app/agentConfigs/semanticSearch/elasticBlogsAgent.ts). Retrieval routes live under `src/app/api`; the shared search implementation is [`utility.ts`](src/app/api/utility.ts).
+Agent prompts, tool schemas, and tool implementations live in [`src/app/agentConfigs`](src/app/agentConfigs). Start with [`bioguideAgent.ts`](src/app/agentConfigs/semanticSearch/bioguideAgent.ts). Retrieval routes live under `src/app/api`; the shared search implementation is [`utility.ts`](src/app/api/utility.ts).
 
 The conversation flow is browser ↔ OpenAI Realtime, with tool calls executed by the browser through a Next.js retrieval route to Elasticsearch. The handoff flow is approved excerpt → Next.js route → Workflow → Elasticsearch retrieval → AI Gateway generation → reviewed draft.
 
