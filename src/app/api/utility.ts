@@ -81,6 +81,7 @@ interface SearchOptions {
     semanticField: string
     lexicalFields?: string[]
     nameFields?: string[]
+    nameLookupQuery?: (query: string) => string
     size?: number
     requestTimeout?: number
 }
@@ -88,7 +89,7 @@ interface SearchOptions {
 // Query the public semantic_text interface, rather than its internal nested vector paths.
 async function searchDocuments(
     query: string,
-    { index, semanticField, lexicalFields, nameFields, size = 3, requestTimeout }: SearchOptions,
+    { index, semanticField, lexicalFields, nameFields, nameLookupQuery, size = 3, requestTimeout }: SearchOptions,
 ) {
     const transportOptions = requestTimeout === undefined ? undefined : { requestTimeout }
     const sourceFields = [
@@ -113,7 +114,14 @@ async function searchDocuments(
                 index,
                 size,
                 _source: sourceFields,
-                query: { multi_match: { query, fields: nameFields, type: "cross_fields", operator: "and" } },
+                query: {
+                    multi_match: {
+                        query: nameLookupQuery?.(query) ?? query,
+                        fields: nameFields,
+                        type: "cross_fields",
+                        operator: "and",
+                    },
+                },
             },
             transportOptions,
         )
@@ -154,10 +162,20 @@ async function searchDocuments(
 
 const searchLabs = { index: "search-labs-blogs", semanticField: "body_semantic" }
 
+function bioGuideNameLookup(query: string): string {
+    // Give the strict name lookup a clean phrase from a voice question. When
+    // there are multiple plausible names, leave the question intact for RRF.
+    const names = query
+        .replace(/\b(?:U\.S\.\s+)?(?:Senator|Representative|President|Sen\.|Rep\.)\s+/g, "")
+        .match(/(?<![\p{L}\p{M}])(?:[\p{Lu}\p{Lt}][\p{L}\p{M}'’-]*\.?\s+){1,4}[\p{Lu}\p{Lt}][\p{L}\p{M}'’-]*\.?(?![\p{L}\p{M}])/gu)
+    return names?.length === 1 ? names[0] : query
+}
+
 // Keep voice lookup and durable handoff on the same congressional corpus and retrieval strategy.
 const bioGuideSearch: SearchOptions = {
     index: "person",
     semanticField: "profileText_semantic",
+    nameLookupQuery: bioGuideNameLookup,
     nameFields: [
         "givenName",
         "middleName",

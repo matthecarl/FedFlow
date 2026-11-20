@@ -108,7 +108,7 @@ test("email rejects malformed payloads and forwards only validated fields", asyn
     ])
 })
 
-test("BioGuide prioritizes all name terms and preserves middle names", async () => {
+test("BioGuide resolves the member name in a natural question before hybrid retrieval", async () => {
     const { api, calls } = searchFixture([
         {
             _source: {
@@ -122,17 +122,30 @@ test("BioGuide prioritizes all name terms and preserves middle names", async () 
         },
     ])
     const route = load("src/app/api/bioguide/route.ts", { dependencies: { "../utility": api } })
-    const response = await route.GET(request("John Quincy Adams"))
+    const response = await route.GET(request("What congressional offices did John Quincy Adams hold, and when?"))
     const body = await response.json()
     assert.equal(body.results[0].title, "John Quincy Adams")
     assert.equal(body.results[0].bioguide_id, "A000041")
     assert.equal(body.results[0].url, "https://bioguide.congress.gov/search/bio/A000041")
     assert.deepEqual(body.results[0].additional_urls, [body.results[0].url])
     assert.equal(calls.length, 1)
+    assert.equal(calls[0].query.multi_match.query, "John Quincy Adams")
     assert.equal(calls[0].query.multi_match.operator, "and")
     assert.equal(calls[0].query.multi_match.type, "cross_fields")
     assert.ok(calls[0].query.multi_match.fields.includes("middleName"))
     assert.ok(!calls[0].query.multi_match.fields.includes("profileText"))
+})
+
+test("BioGuide preserves the full question for fallback when name lookup has no hit", async () => {
+    const { api, calls } = searchFixture()
+    const route = load("src/app/api/bioguide/route.ts", { dependencies: { "../utility": api } })
+    const question = "When did U.S. Representative Nydia M. Velázquez serve?"
+    const response = await route.GET(request(question))
+    assert.equal(response.status, 200)
+    assert.equal(calls.length, 2)
+    assert.equal(calls[0].query.multi_match.query, "Nydia M. Velázquez")
+    assert.equal(calls[1].retriever.rrf.retrievers[0].standard.query.multi_match.query, question)
+    assert.equal(calls[1].retriever.rrf.retrievers[1].standard.query.semantic.query, question)
 })
 
 test("BioGuide broad questions still use hybrid retrieval when names do not match", async () => {
@@ -141,5 +154,16 @@ test("BioGuide broad questions still use hybrid retrieval when names do not matc
     const response = await route.GET(request("members of Congress from Pennsylvania"))
     assert.equal(response.status, 200)
     assert.equal(calls.length, 2)
+    assert.equal(calls[0].query.multi_match.query, "members of Congress from Pennsylvania")
     assert.equal(calls[1].retriever.rrf.retrievers[1].standard.query.semantic.field, "profileText_semantic")
+})
+
+test("BioGuide does not reduce a comparison to the first name", async () => {
+    const { api, calls } = searchFixture()
+    const route = load("src/app/api/bioguide/route.ts", { dependencies: { "../utility": api } })
+    const question = "Compare John Adams and John Quincy Adams."
+    await route.GET(request(question))
+    assert.equal(calls.length, 2)
+    assert.equal(calls[0].query.multi_match.query, question)
+    assert.equal(calls[1].retriever.rrf.retrievers[1].standard.query.semantic.query, question)
 })
