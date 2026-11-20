@@ -1,37 +1,31 @@
 import { NextResponse } from "next/server"
 import { Client } from "@elastic/elasticsearch"
+import { InvalidRequestError, readRequestObject } from "@/app/lib/agent-builder-kibana"
+import { sanitizeTelemetry } from "@/app/lib/telemetry-safety"
 
-const esNode = process.env.ELASTICSEARCH_CAPSTONE_URL
-const esApiKey = process.env.ELASTICSEARCH_LOGSAI_API_KEY
-
-if (!esNode || !esApiKey) {
-    throw new Error("Elasticsearch environment variables are not set.")
-}
-
-const esClient = new Client({
-    node: esNode,
-    auth: { apiKey: esApiKey },
-})
+let esClient: Client | undefined
 
 export async function POST(request: Request) {
+    const esNode = process.env.ELASTICSEARCH_CAPSTONE_URL
+    const esApiKey = process.env.ELASTICSEARCH_LOGSAI_API_KEY
+    if (!esNode || !esApiKey) {
+        return NextResponse.json({ error: "WebRTC telemetry is not configured." }, { status: 503 })
+    }
+
     try {
-        // Parse the JSON payload from the request.
-        const eventData = await request.json()
-        eventData["@timestamp"] = new Date().toISOString()
-
-        // Create an index name using the current date.
-
-        const indexName = `webrtc-stats`
-
-        // Index the document into Elasticsearch.
-        const result = await esClient.index({
-            index: indexName,
-            document: eventData,
+        const eventData = sanitizeTelemetry(await readRequestObject(request, 64000)) as Record<string, unknown>
+        esClient ??= new Client({ node: esNode, auth: { apiKey: esApiKey }, requestTimeout: 10000, maxRetries: 0 })
+        await esClient.index({
+            index: "webrtc-stats",
+            op_type: "create",
+            document: { ...eventData, "@timestamp": new Date().toISOString() },
         })
-
-        return NextResponse.json({ result: "success", esResult: result })
+        return NextResponse.json({ result: "success" })
     } catch (error) {
-        console.error("Error indexing document:", error)
-        return NextResponse.json({ error: "Error indexing document", details: error }, { status: 500 })
+        if (error instanceof InvalidRequestError) {
+            return NextResponse.json({ error: error.message }, { status: error.status })
+        }
+        console.error("WebRTC telemetry indexing failed")
+        return NextResponse.json({ error: "WebRTC telemetry could not be stored." }, { status: 502 })
     }
 }

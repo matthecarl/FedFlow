@@ -12,6 +12,8 @@ elasticExpert.downstreamAgents = [vaAgent, medicareAgent, greeter, irsAgent, bio
 medicareAgent.downstreamAgents = [vaAgent, elasticExpert, greeter, irsAgent, bioguideAgent]
 irsAgent.downstreamAgents = [vaAgent, elasticExpert, greeter, medicareAgent, bioguideAgent]
 
+bioguideAgent.downstreamAgents = [vaAgent, elasticExpert, greeter, medicareAgent, irsAgent]
+
 const agents = injectTransferTools([greeter, vaAgent, elasticExpert, medicareAgent, irsAgent, bioguideAgent])
 
 export default agents

@@ -1,3 +1,4 @@
+import { sanitizeTelemetry } from "@/app/lib/telemetry-safety"
 import { NextRequest, NextResponse } from "next/server"
 import {
     trace,
@@ -61,7 +62,7 @@ import {
 
 // Debug mode configuration
 const DEBUG_MODE = process.env.DEBUG_TELEMETRY === "true"
-const CAPTURE_FULL_CONTENT = process.env.TELEMETRY_CAPTURE_FULL_CONTENT !== "false"
+const CAPTURE_FULL_CONTENT = process.env.TELEMETRY_CAPTURE_FULL_CONTENT === "true"
 
 // Debug logger implementation
 function debug(...args: any[]) {
@@ -161,7 +162,9 @@ function enrichEventDataFromResponse(eventData: Record<string, any>): void {
     eventData.contentTypes = content.map((item: any) => item?.type).filter(Boolean)
     eventData.hasAudioContent = content.some((item: any) => item?.type === "audio")
 
-    const transcriptContent = content.find((item: any) => typeof item?.transcript === "string" && item.transcript.trim())
+    const transcriptContent = content.find(
+        (item: any) => typeof item?.transcript === "string" && item.transcript.trim(),
+    )
     if (transcriptContent) {
         eventData.transcript = transcriptContent.transcript
         eventData.hasTranscript = true
@@ -562,8 +565,8 @@ class BatchTelemetryProcessor {
  * Validate required fields in event data
  */
 function validateEventData(eventType: string, eventData: any): string | null {
-    if (!eventData) {
-        return "Missing eventData"
+    if (!eventData || typeof eventData !== "object" || Array.isArray(eventData)) {
+        return "eventData must be an object"
     }
 
     // If we receive an event with type property, extract it as the eventType
@@ -608,7 +611,7 @@ function validateEventData(eventType: string, eventData: any): string | null {
 
         case "full_transcript":
         case "user_transcript":
-            if (!eventData.transcript) {
+            if (CAPTURE_FULL_CONTENT && typeof eventData.transcript !== "string") {
                 return "Transcript events require transcript content"
             }
             break
@@ -663,7 +666,38 @@ export async function POST(req: NextRequest) {
         const parentContext = extractTraceContext(req)
 
         // Parse the request body
-        const data = await req.json()
+        let data: any
+        try {
+            const raw = await req.text()
+            if (raw.length > 250000)
+                return NextResponse.json({ error: "Telemetry payload is too large." }, { status: 413 })
+            data = JSON.parse(raw)
+        } catch {
+            return NextResponse.json({ error: "Invalid telemetry JSON." }, { status: 400 })
+        }
+        const envelopes = Array.isArray(data) ? data : [data]
+        if (
+            !envelopes.length ||
+            envelopes.length > 100 ||
+            envelopes.some(
+                (item: any) =>
+                    !item ||
+                    typeof item !== "object" ||
+                    typeof item.eventType !== "string" ||
+                    !/^[a-zA-Z0-9_.-]{1,100}$/.test(item.eventType) ||
+                    !item.eventData ||
+                    typeof item.eventData !== "object" ||
+                    Array.isArray(item.eventData),
+            )
+        ) {
+            return NextResponse.json({ error: "Provide 1 to 100 valid telemetry event objects." }, { status: 400 })
+        }
+        // Validate before stripping optional transcript content.
+        for (const envelope of envelopes) {
+            const validationError = validateEventData(envelope.eventType, envelope.eventData)
+            if (validationError) return NextResponse.json({ error: validationError }, { status: 400 })
+        }
+        data = sanitizeTelemetry(data, CAPTURE_FULL_CONTENT)
 
         // Handle batch or single event
         if (Array.isArray(data)) {
@@ -809,7 +843,6 @@ export async function POST(req: NextRequest) {
         })
 
         // Log the error using the logger API (similar to instrumentation.ts)
-        const errorMessage = error instanceof Error ? error.message : String(error)
         const errorType = error instanceof Error ? error.constructor.name : "UnknownError"
 
         // End the span
@@ -818,7 +851,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
             {
                 success: false,
-                error: errorMessage,
+                error: "Telemetry processing failed.",
                 errorType,
             },
             { status: 500 },

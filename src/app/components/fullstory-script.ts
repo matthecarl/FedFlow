@@ -10,6 +10,9 @@ import { useEffect } from "react"
  */
 export function FullStoryScript() {
     useEffect(() => {
+        const organizationId = process.env.NEXT_PUBLIC_FULLSTORY_ORG_ID
+        if (process.env.NEXT_PUBLIC_ENABLE_FULLSTORY !== "true" || !organizationId) return
+
         const isRumConfigured = Boolean(
             process.env.NEXT_PUBLIC_ELASTIC_APM_SERVER_URL && process.env.NEXT_PUBLIC_ELASTIC_APM_SERVICE_NAME,
         )
@@ -18,7 +21,7 @@ export function FullStoryScript() {
         window._fs_host = window._fs_host || "fullstory.com"
         const _fs_script = "https://edge.fullstory.com/s/fs.js"
         window._fs_script = _fs_script
-        window._fs_org = process.env.FS_ORG_ID || "o-2121BN-na1"
+        window._fs_org = organizationId
         window._fs_namespace = "FS"
 
         // Load FullStory snippet

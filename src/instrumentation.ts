@@ -10,7 +10,11 @@ export async function register() {
         return
     }
 
-    if (process.env.NODE_ENV === "production" || process.env.ENABLE_OTEL === "true") {
+    if (
+        process.env.ENABLE_OTEL !== "false" &&
+        process.env.OTEL_EXPORTER_OTLP_ENDPOINT &&
+        (process.env.NODE_ENV === "production" || process.env.ENABLE_OTEL === "true")
+    ) {
         try {
             await import("./instrumentation.node")
         } catch (error) {

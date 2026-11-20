@@ -1,0 +1,13 @@
+# Local credentials and operator state must never enter a deployment bundle.
+.env*
+.vercel
+.git
+.playwright-cli
+.vscode
+AGENTS.md
+script.js
+crawler.yaml
+node_modules
+.next
+output
+*.tsbuildinfo

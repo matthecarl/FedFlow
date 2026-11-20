@@ -1,15 +1,17 @@
-import type { Metadata } from "next"
+import type { Metadata, Viewport } from "next"
 import Script from "next/script"
 import "./globals.css"
 import { FullStoryScript } from "./components/fullstory-script"
 
+export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", interactiveWidget: "resizes-content" }
+
 export const metadata: Metadata = {
     title: "Elastic Realtime Agents",
     description:
-        "Power insights and outcomes with The Elastic Search AI Platform. See into your data and find answers that matter with enterprise solutions designed to help you accelerate time to insight. Try Elastic ...",
+        "A voice conversation across specialized agents, grounded in Elastic knowledge bases and powered by OpenAI Realtime.",
     openGraph: {
-        title: "Elastic — The Search AI Company",
-        description: "Power insights and outcomes with The Elastic Search AI Platform.",
+        title: "Elastic Realtime Agents",
+        description: "Speak naturally. Retrieve relevant sources. Hear answers grounded in your data.",
         images: ["https://www.elastic.co/static-res/images/social_media_default.png"],
     },
 }

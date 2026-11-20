@@ -1,7 +1,7 @@
 import os from "os"
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http"
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http"
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto"
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto"
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http"
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs"
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics"
@@ -60,8 +60,8 @@ if (!runtimeState.started) {
     })
 
     const sdk = new NodeSDK({
-        logRecordProcessors: [new BatchLogRecordProcessor(new OTLPLogExporter({ timeoutMillis: 30000 }))],
-        metricReader,
+        logRecordProcessors: [new BatchLogRecordProcessor({ exporter: new OTLPLogExporter({ timeoutMillis: 30000 }) })],
+        metricReaders: [metricReader],
         instrumentations: [new HttpInstrumentation()],
         spanProcessors: [
             new BatchSpanProcessor(new OTLPTraceExporter({ timeoutMillis: 10000 }), {

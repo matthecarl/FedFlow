@@ -24,6 +24,15 @@ export function useAgentBuilderMirror() {
     const circuitOpenUntilRef = useRef<number | null>(null)
 
     const mirrorTurn = async (request: MirrorTurnRequest): Promise<MirrorTurnResult> => {
+        if (process.env.NEXT_PUBLIC_AGENT_BUILDER_MIRROR_ENABLED !== "true") {
+            return {
+                success: true,
+                status: "skipped",
+                conversationId: null,
+                agentId: DEFAULT_AGENT_ID,
+                reason: "Agent Builder mirroring is disabled.",
+            }
+        }
         const text = request.text?.trim() ?? ""
         const selectedRealtimeAgentName = request.selectedRealtimeAgentName?.trim() || "unknown"
 
