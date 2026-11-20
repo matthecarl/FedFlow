@@ -35,9 +35,9 @@ const sampleDraft: HandoffDraft = {
 
 export function draftFromTranscript(items: TranscriptItem[]): HandoffDraft | null {
     // A new call starts a new transcript excerpt, while the screen keeps prior turns visible.
-    const lastAgentStart = items.findLastIndex((item) => item.type === "BREADCRUMB" && item.title === "Agent: Elastic" && item.sourceBackend === "realtime")
+    const lastAgentStart = items.findLastIndex((item) => item.type === "BREADCRUMB" && item.title === "Agent: Elastic")
     const turns = items.slice(lastAgentStart + 1).flatMap((item) => {
-        if (item.type !== "MESSAGE" || item.isHidden || item.status !== "DONE" || item.sourceBackend !== "realtime") return []
+        if (item.type !== "MESSAGE" || item.isHidden || item.status !== "DONE") return []
         if (item.role !== "user" && item.role !== "assistant") return []
         const text = item.title?.trim()
         if (!text || text === "[inaudible]" || text === "[Transcribing...]") return []

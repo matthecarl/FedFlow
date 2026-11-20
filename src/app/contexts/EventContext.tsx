@@ -2,12 +2,12 @@
 
 import React, { createContext, useContext, useState, FC, PropsWithChildren } from "react"
 import { v4 as uuidv4 } from "uuid"
-import { BackendSource, LoggedEvent } from "@/app/types"
+import { LoggedEvent } from "@/app/types"
 
 type EventContextValue = {
     loggedEvents: LoggedEvent[]
-    logClientEvent: (eventObj: Record<string, any>, eventNameSuffix?: string, sourceBackend?: BackendSource) => void
-    logServerEvent: (eventObj: Record<string, any>, eventNameSuffix?: string, sourceBackend?: BackendSource) => void
+    logClientEvent: (eventObj: Record<string, any>, eventNameSuffix?: string) => void
+    logServerEvent: (eventObj: Record<string, any>, eventNameSuffix?: string) => void
     toggleExpand: (id: number | string) => void
 }
 
@@ -20,7 +20,6 @@ export const EventProvider: FC<PropsWithChildren> = ({ children }) => {
         direction: "client" | "server",
         eventName: string,
         eventData: Record<string, any>,
-        sourceBackend: BackendSource,
     ) {
         const id = eventData.event_id || uuidv4()
 
@@ -39,7 +38,6 @@ export const EventProvider: FC<PropsWithChildren> = ({ children }) => {
                     eventData,
                     timestamp: new Date().toLocaleTimeString(),
                     expanded: false,
-                    sourceBackend,
                 },
             ]
         })
@@ -48,19 +46,17 @@ export const EventProvider: FC<PropsWithChildren> = ({ children }) => {
     const logClientEvent: EventContextValue["logClientEvent"] = (
         eventObj,
         eventNameSuffix = "",
-        sourceBackend = "realtime",
     ) => {
         const name = `${eventObj.type || ""} ${eventNameSuffix || ""}`.trim()
-        addLoggedEvent("client", name, eventObj, sourceBackend)
+        addLoggedEvent("client", name, eventObj)
     }
 
     const logServerEvent: EventContextValue["logServerEvent"] = (
         eventObj,
         eventNameSuffix = "",
-        sourceBackend = "realtime",
     ) => {
         const name = `${eventObj.type || ""} ${eventNameSuffix || ""}`.trim()
-        addLoggedEvent("server", name, eventObj, sourceBackend)
+        addLoggedEvent("server", name, eventObj)
     }
 
     const toggleExpand: EventContextValue["toggleExpand"] = (id) => {

@@ -14,6 +14,7 @@ flowchart LR
 flowchart LR
   Browser[Reviewer browser]
   Voice[OpenAI Realtime]
+  DraftModel[OpenAI: GPT-5 mini]
   Elastic[External Elasticsearch: Search Labs]
   subgraph Vercel
     App[Next.js app and authenticated API]
@@ -26,16 +27,20 @@ flowchart LR
   App -->|start or recover run| Work
   Work -->|read-only search| Elastic
   Work -->|AI SDK structured generation| Gateway
+  Gateway -->|model request| DraftModel
 ```
 
-Elasticsearch retains the index, ingestion, relevance configuration, and search permissions. The demo reads `search-labs-blogs` through `body_semantic` over authenticated HTTPS. Voice uses a short-lived browser credential and a direct OpenAI media connection. Vercel receives the explicitly approved text excerpt for the handoff. These are separate failure paths.
+Vercel connects the support experience to an existing knowledge platform. Elasticsearch retains the index, ingestion, relevance configuration, and search permissions. The demo reads `search-labs-blogs` through `body_semantic` over authenticated HTTPS. Voice and typed conversation use a short-lived browser credential and a direct OpenAI Realtime connection. Vercel receives the explicitly approved text excerpt for the handoff. These are separate failure paths.
 
 | Vercel choice | Role and trade-off |
 | --- | --- |
-| AI SDK | Enforces the draft shape and gives the app usage data. The server still verifies citations against retrieved sources. |
-| AI Gateway | Gives the draft model a single endpoint and exposes model usage. Its costs cover the draft model call; voice is billed separately. |
+| AI SDK | Validates the structured draft and gives the app usage data. The server resolves citation IDs against retrieved sources; human review checks whether the recommendation is supported. |
+| AI Gateway | Routes the draft call to `openai/gpt-5-mini` and exposes model usage. Its costs cover the draft model call; OpenAI Realtime is billed separately. |
 | Workflows | Checkpoints retrieval and generation so the draft can continue when a tab reloads. It introduces state retention and retry semantics that matter in production. |
+| Vercel Functions | Runs the Next.js API routes for credential issuance, external retrieval, and starting or reading handoff runs. Long-lived audio travels directly between the browser and OpenAI. |
 | Preview Deployments | Pin review to a commit and validate both providers and Elastic before promotion. Build readiness alone does not validate upstream credentials. |
+
+Development agents use Vercel Board for task coordination and review evidence. AI SDK, AI Gateway, and Workflows meet the AI-stack requirement.
 
 ## Reviewer walkthrough
 
@@ -54,4 +59,8 @@ The public repository is [FedFlow](https://github.com/matthecarl/FedFlow/tree/co
 
 ## Development tooling
 
-Codex agents worked in parallel on the Voice UI, Workflow API and evaluation, and a parser benchmark. Vercel Board held private, unsynced task discussions and sanitized results. The Rust/Wasm experiment passed parser parity and improved warm CPU use, but missed the first-use latency gate. The demo release uses the existing parser.
+Codex agents worked in parallel on the voice UI, Workflow API and evaluation, and a parser benchmark. Vercel Board held private, unsynced task discussions and sanitized results. These are development tools; the deployed application uses the runtime paths described above.
+
+### Historical parser experiment
+
+The Rust/Wasm prototype targeted the retired event-stream parser. It passed parser parity tests and cut warm p95 CPU time by about 61% on the large local fixture. First-use p95 time was 3.07 ms for Wasm and 0.165 ms for TypeScript, so the prototype missed the startup latency gate.

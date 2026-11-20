@@ -2,7 +2,7 @@ import React from "react"
 import Transcript from "./Transcript"
 import Events from "./Events"
 import AudioDancerComponent from "./AudioDancerComponent"
-import { ConversationMode, SessionStatus } from "@/app/types"
+import { SessionStatus } from "@/app/types"
 import { supportPrompts } from "@/app/hooks/useSupportHandoff"
 
 interface MainProps {
@@ -15,7 +15,6 @@ interface MainProps {
     isEventsPaneExpanded: boolean
     sessionStatus: SessionStatus
     selectedAgentName: string
-    conversationMode: ConversationMode
     canDraftHandoff: boolean
     hasHandoffRun: boolean
     onDraftHandoff: () => void
@@ -33,15 +32,13 @@ export function Main({
     isEventsPaneExpanded,
     sessionStatus,
     selectedAgentName,
-    conversationMode,
     canDraftHandoff,
     hasHandoffRun,
     onDraftHandoff,
     onViewHandoff,
     onSampleCall,
 }: MainProps) {
-    const isVoice = conversationMode === "realtime_voice_mirror"
-    const sessionLabel = !isVoice ? "Text conversation" : sessionStatus === "CONNECTED" ? "Live conversation" : sessionStatus === "CONNECTING" ? "Connecting your microphone…" : "Session paused"
+    const sessionLabel = sessionStatus === "CONNECTED" ? "Live conversation" : sessionStatus === "CONNECTING" ? "Connecting your microphone…" : "Session paused"
     const statusDot = sessionStatus === "CONNECTED" ? "bg-emerald-500" : sessionStatus === "CONNECTING" ? "bg-amber-500" : "bg-slate-300"
 
     return (
@@ -62,7 +59,7 @@ export function Main({
                     </div>
                     <button type="button" className="btn btn-soft" onClick={onSampleCall}>Try sample call</button>
                     {hasHandoffRun && <button type="button" className="btn btn-soft" onClick={onViewHandoff}>View handoff</button>}
-                    {isVoice && selectedAgentName === "Elastic" && (
+                    {selectedAgentName === "Elastic" && (
                         <button type="button" className="btn btn-neutral" onClick={onDraftHandoff} disabled={!canDraftHandoff}>Draft handoff</button>
                     )}
                 </div>
@@ -73,9 +70,8 @@ export function Main({
                     setUserText={setUserText}
                     onSendMessage={onSendMessage}
                     canSend={canSend}
-                    conversationMode={conversationMode}
                     sessionStatus={sessionStatus}
-                    prompts={isVoice && selectedAgentName === "Elastic" ? supportPrompts : undefined}
+                    prompts={selectedAgentName === "Elastic" ? supportPrompts : undefined}
                 />
                 {isEventsPaneExpanded && <Events isExpanded={true} />}
             </div>

@@ -1,8 +1,7 @@
 import React from "react"
-import { ConversationMode, SessionStatus } from "@/app/types"
+import { SessionStatus } from "@/app/types"
 
 interface BottomToolbarProps {
-    conversationMode: ConversationMode
     sessionStatus: SessionStatus
     onToggleConnection: () => void
     isPTTActive: boolean
@@ -50,7 +49,6 @@ function Switch({
 }
 
 function BottomToolbar({
-    conversationMode,
     sessionStatus,
     onToggleConnection,
     isPTTActive,
@@ -63,28 +61,12 @@ function BottomToolbar({
     isAudioPlaybackEnabled,
     setIsAudioPlaybackEnabled,
 }: BottomToolbarProps) {
-    const isRealtimeVoiceMode = conversationMode === "realtime_voice_mirror"
     const isConnected = sessionStatus === "CONNECTED"
     const isConnecting = sessionStatus === "CONNECTING"
-    const isVoiceControlsDisabled = !isRealtimeVoiceMode
 
-    const connectionLabel = !isRealtimeVoiceMode
-        ? "Text mode active"
-        : isConnected
-          ? "Disconnect"
-          : isConnecting
-            ? "Connecting..."
-            : "Connect"
-
-    const connectionClasses = !isRealtimeVoiceMode
-        ? "btn btn-soft"
-        : isConnected
-          ? "btn btn-danger"
-          : isConnecting
-            ? "btn btn-neutral"
-            : "btn btn-primary"
-
-    const talkLabel = !isPTTActive ? "Talk" : isPTTUserSpeaking ? "Listening..." : "Hold to talk"
+    const connectionLabel = isConnected ? "Disconnect" : isConnecting ? "Connecting..." : "Connect"
+    const connectionClasses = isConnected ? "btn btn-danger" : isConnecting ? "btn btn-neutral" : "btn btn-primary"
+    const talkLabel = isPTTUserSpeaking ? "Listening..." : "Hold to talk"
 
     return (
         <footer className="app-toolbar">
@@ -94,11 +76,11 @@ function BottomToolbar({
                         <button
                             onClick={onToggleConnection}
                             className={connectionClasses}
-                            disabled={isConnecting || isVoiceControlsDisabled}
+                            disabled={isConnecting}
                         >
                             {connectionLabel}
                         </button>
-                        <span className="toolbar-hint">{!isRealtimeVoiceMode ? "Type your question above" : isConnected ? "Microphone connected" : isConnecting ? "Allow microphone access" : "Microphone off"}</span>
+                        <span className="toolbar-hint">{isConnected ? "Microphone connected" : isConnecting ? "Allow microphone access" : "Microphone off"}</span>
                     </div>
 
                     <div className="toolbar-options">
@@ -107,7 +89,7 @@ function BottomToolbar({
                             label="Push to talk"
                             checked={isPTTActive}
                             onChange={setIsPTTActive}
-                            disabled={!isConnected || isVoiceControlsDisabled}
+                            disabled={!isConnected}
                         />
                         {isPTTActive && <button
                             onPointerDown={(event) => {
@@ -129,15 +111,8 @@ function BottomToolbar({
                                 }
                             }}
                             onBlur={() => { if (isPTTUserSpeaking) handleTalkButtonUp() }}
-                            disabled={!isConnected || !isPTTActive || isVoiceControlsDisabled}
-                            className={
-                                "btn " +
-                                (!isPTTActive || isVoiceControlsDisabled
-                                    ? "btn-soft"
-                                    : isPTTUserSpeaking
-                                      ? "bg-accent text-slate-900 hover:brightness-95"
-                                      : "btn-soft")
-                            }
+                            disabled={!isConnected}
+                            className={isPTTUserSpeaking ? "btn bg-accent text-slate-900 hover:brightness-95" : "btn btn-soft"}
                         >
                             {talkLabel}
                         </button>}
@@ -147,7 +122,7 @@ function BottomToolbar({
                             label="Audio playback"
                             checked={isAudioPlaybackEnabled}
                             onChange={setIsAudioPlaybackEnabled}
-                            disabled={!isConnected || isVoiceControlsDisabled}
+                            disabled={!isConnected}
                         />
                         <Switch
                             id="logs"

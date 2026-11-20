@@ -2,11 +2,9 @@ import { useRef, useState, useEffect } from "react"
 import { v4 as uuidv4 } from "uuid"
 import { SessionStatus, UseRealtimeConnectionProps } from "@/app/types"
 import { createRealtimeConnection, RealtimeConnectionStage } from "@/app/lib/realtimeConnection"
-import { parseSseFrame, safeParseSseData, splitSseFrames } from "@/app/lib/agent-builder-sse"
 import { useTranscript } from "@/app/contexts/TranscriptContext"
 import { useEvent } from "@/app/contexts/EventContext"
 import { useHandleServerEvent } from "./useHandleServerEvent"
-import { useAgentBuilderMirror } from "./useAgentBuilderMirror"
 import { recordServerEvent } from "../lib/client-telemetry"
 import { RealtimeResponseCoordinator } from "@/app/lib/realtimeResponseCoordinator"
 
@@ -14,7 +12,6 @@ export function useRealtimeConnection({
     selectedAgentName,
     setSelectedAgentName,
     selectedAgentConfigSet,
-    conversationMode,
     autoConnect = true,
 }: UseRealtimeConnectionProps) {
     const [sessionStatus, setSessionStatus] = useState<SessionStatus>("DISCONNECTED")
@@ -50,116 +47,22 @@ export function useRealtimeConnection({
         }
     }, []) // Empty dependency array ensures this only runs once after mount
     const [userText, setUserText] = useState<string>("")
-    const [isAgentBuilderSending, setIsAgentBuilderSending] = useState<boolean>(false)
 
     // References
     const pcRef = useRef<RTCPeerConnection | null>(null)
     const dcRef = useRef<RTCDataChannel | null>(null)
     const audioElementRef = useRef<HTMLAudioElement | null>(null)
-    const updateSessionCounterRef = useRef(0)
     const dcEventHandlersRef = useRef<{
         open: () => void
         close: () => void
         error: (err: any) => void
         message: (e: MessageEvent) => void
     } | null>(null)
-    const agentBuilderConversationIdRef = useRef<string | null>(null)
-    const agentBuilderConversationIdsByAgentRef = useRef<Record<string, string>>({})
 
-    const { addTranscriptMessage, addTranscriptBreadcrumb, updateTranscriptMessage, updateTranscriptItemStatus } =
-        useTranscript()
+    const { addTranscriptMessage, addTranscriptBreadcrumb } = useTranscript()
     const { logClientEvent, logServerEvent } = useEvent()
-    const { mirrorTurn } = useAgentBuilderMirror()
-    const isRealtimeVoiceMode = conversationMode === "realtime_voice_mirror"
     if (!responseCoordinatorRef.current) {
         responseCoordinatorRef.current = new RealtimeResponseCoordinator(sendWireEvent, uuidv4)
-    }
-
-    // Prevent cross-agent context leakage in Agent Builder text mode by keying conversation IDs per selected agent.
-    useEffect(() => {
-        const key = selectedAgentName?.trim()
-        if (!key) {
-            agentBuilderConversationIdRef.current = null
-            return
-        }
-
-        agentBuilderConversationIdRef.current = agentBuilderConversationIdsByAgentRef.current[key] ?? null
-    }, [selectedAgentName])
-    const extractConversationIdFromSsePayload = (payload: unknown): string | null => {
-        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-            return null
-        }
-
-        const payloadObj = payload as Record<string, unknown>
-        const directId =
-            (typeof payloadObj.conversation_id === "string" && payloadObj.conversation_id) ||
-            (typeof payloadObj.conversationId === "string" && payloadObj.conversationId)
-        if (directId) {
-            return directId
-        }
-
-        const nested = payloadObj.data
-        if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
-            return null
-        }
-
-        const nestedObj = nested as Record<string, unknown>
-        return (
-            (typeof nestedObj.conversation_id === "string" && nestedObj.conversation_id) ||
-            (typeof nestedObj.conversationId === "string" && nestedObj.conversationId) ||
-            null
-        )
-    }
-
-    const extractMessageTextFromSsePayload = (payload: unknown): string | null => {
-        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-            return null
-        }
-
-        const payloadObj = payload as Record<string, unknown>
-        const extractFrom = (value: unknown): string | null => {
-            if (!value || typeof value !== "object" || Array.isArray(value)) {
-                return null
-            }
-            const obj = value as Record<string, unknown>
-            if (typeof obj.message === "string") {
-                return obj.message
-            }
-            if (typeof obj.chunk === "string") {
-                return obj.chunk
-            }
-            // Kibana Agent Builder SSE uses `text_chunk` for deltas.
-            if (typeof obj.text_chunk === "string") {
-                return obj.text_chunk
-            }
-            if (typeof obj.text === "string") {
-                return obj.text
-            }
-            // Some events provide the full message under `message_content`.
-            if (typeof obj.message_content === "string") {
-                return obj.message_content
-            }
-            if (Array.isArray(obj.message_content)) {
-                const joined = obj.message_content
-                    .map((item) => {
-                        if (!item || typeof item !== "object" || Array.isArray(item)) {
-                            return ""
-                        }
-                        const itemObj = item as Record<string, unknown>
-                        return typeof itemObj.text === "string"
-                            ? itemObj.text
-                            : typeof itemObj.content === "string"
-                              ? itemObj.content
-                              : ""
-                    })
-                    .filter(Boolean)
-                    .join("")
-                return joined || null
-            }
-            return null
-        }
-
-        return extractFrom(payloadObj) || extractFrom(payloadObj.data)
     }
 
     // Set up the server event handler
@@ -169,7 +72,6 @@ export function useRealtimeConnection({
         selectedAgentConfigSet,
         sendClientEvent,
         setSelectedAgentName, // Pass the real setSelectedAgentName function
-        mirrorTurn,
     })
 
     // Function to send events to the client
@@ -417,10 +319,6 @@ export function useRealtimeConnection({
 
     // Toggle connection function
     const onToggleConnection = () => {
-        if (!isRealtimeVoiceMode) {
-            return
-        }
-
         if (sessionStatus === "CONNECTED" || sessionStatus === "CONNECTING" || connectionAbortRef.current) {
             deliberatelyDisconnectedRef.current = true
             disconnectFromRealtime()
@@ -431,245 +329,24 @@ export function useRealtimeConnection({
         }
     }
 
-    // Function to send user text message
-    const handleSendTextMessage = async () => {
+    const handleSendTextMessage = () => {
         const textToSend = userText.trim()
-        if (!textToSend) return
+        if (!textToSend || dcRef.current?.readyState !== "open") return
 
-        if (isRealtimeVoiceMode) {
-            cancelAssistantSpeech()
-
-            sendClientEvent(
-                {
-                    type: "conversation.item.create",
-                    item: {
-                        type: "message",
-                        role: "user",
-                        content: [{ type: "input_text", text: textToSend }],
-                    },
+        cancelAssistantSpeech()
+        sendClientEvent(
+            {
+                type: "conversation.item.create",
+                item: {
+                    type: "message",
+                    role: "user",
+                    content: [{ type: "input_text", text: textToSend }],
                 },
-                "(send user text message)",
-            )
-            setUserText("")
-
-            // Fire-and-forget mirror to Agent Builder for Elastic visibility.
-            void mirrorTurn({
-                text: textToSend,
-                role: "user",
-                selectedRealtimeAgentName: selectedAgentName,
-                metadata: {
-                    inputType: "typed_text",
-                },
-            })
-
-            sendClientEvent({ type: "response.create" }, "trigger response")
-            return
-        }
-
-        const userMessageId = uuidv4()
-        addTranscriptMessage(userMessageId, "user", textToSend, false, "agent_builder")
-        updateTranscriptItemStatus(userMessageId, "DONE")
+            },
+            "(send user text message)",
+        )
         setUserText("")
-        setIsAgentBuilderSending(true)
-
-        let assistantMessageId: string | null = null
-        let finalAssistantText = ""
-
-        try {
-            logClientEvent(
-                {
-                    type: "agent_builder.chat.request",
-                    hasConversationId: Boolean(agentBuilderConversationIdRef.current),
-                    selectedRealtimeAgentName: selectedAgentName,
-                },
-                "",
-                "agent_builder",
-            )
-
-            const abortController = new AbortController()
-            const requestTimeoutMs = 120_000
-            const requestTimeoutId = window.setTimeout(() => abortController.abort(), requestTimeoutMs)
-
-            const response = await fetch("/api/agent-builder/chat", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    input: textToSend,
-                    conversationId: agentBuilderConversationIdRef.current,
-                    selectedRealtimeAgentName: selectedAgentName,
-                }),
-                signal: abortController.signal,
-            })
-
-            if (!response.ok) {
-                const errorText = await response.text().catch(() => "")
-                let message = errorText || response.statusText || "Agent Builder request failed"
-                try {
-                    const parsed = JSON.parse(errorText)
-                    if (typeof parsed?.error === "string") {
-                        message = parsed.error
-                    } else if (typeof parsed?.details === "string") {
-                        message = parsed.details
-                    } else if (typeof parsed?.message === "string") {
-                        message = parsed.message
-                    }
-                } catch {
-                    // keep raw errorText
-                }
-                throw new Error(`${message} (HTTP ${response.status})`)
-            }
-
-            if (!response.body) {
-                throw new Error("Agent Builder stream response was empty.")
-            }
-
-            const reader = response.body.getReader()
-            const decoder = new TextDecoder()
-            let buffer = ""
-            let shouldStop = false
-
-            try {
-                while (true) {
-                    const { done, value } = await reader.read()
-                    if (done) {
-                        break
-                    }
-                    if (!value) {
-                        continue
-                    }
-
-                    buffer += decoder.decode(value, { stream: true })
-                    const { frames, remaining } = splitSseFrames(buffer)
-                    buffer = remaining
-
-                    for (const frame of frames) {
-                        const parsed = parseSseFrame(frame)
-                        if (!parsed) {
-                            continue
-                        }
-
-                        const payload = safeParseSseData(parsed.data)
-                        const conversationId = extractConversationIdFromSsePayload(payload)
-                        if (conversationId) {
-                            agentBuilderConversationIdRef.current = conversationId
-                            if (selectedAgentName?.trim()) {
-                                agentBuilderConversationIdsByAgentRef.current[selectedAgentName.trim()] = conversationId
-                            }
-                        }
-
-                        // Kibana Agent Builder SSE event names have varied across releases. We treat any frame
-                        // that contains message text as either a delta ("chunk") or a replacement ("message").
-                        const content = extractMessageTextFromSsePayload(payload)
-                        if (content && content.length > 0) {
-                            const payloadObj =
-                                payload && typeof payload === "object" && !Array.isArray(payload)
-                                    ? (payload as Record<string, unknown>)
-                                    : null
-                            const nestedObj =
-                                payloadObj?.data && typeof payloadObj.data === "object" && !Array.isArray(payloadObj.data)
-                                    ? (payloadObj.data as Record<string, unknown>)
-                                    : null
-
-                            const isDelta =
-                                parsed.event.includes("chunk") ||
-                                parsed.event.includes("delta") ||
-                                typeof payloadObj?.chunk === "string" ||
-                                typeof nestedObj?.chunk === "string" ||
-                                typeof payloadObj?.text_chunk === "string" ||
-                                typeof nestedObj?.text_chunk === "string"
-
-                            const isFinal =
-                                parsed.event.includes("complete") ||
-                                parsed.event.includes("round_complete") ||
-                                parsed.event.includes("done") ||
-                                payloadObj?.done === true ||
-                                nestedObj?.done === true
-
-                            if (!assistantMessageId) {
-                                assistantMessageId = uuidv4()
-                                addTranscriptMessage(assistantMessageId, "assistant", "", false, "agent_builder")
-                            }
-
-                            if (isDelta) {
-                                finalAssistantText += content
-                                updateTranscriptMessage(assistantMessageId, content, true)
-                            } else {
-                                finalAssistantText = content
-                                updateTranscriptMessage(assistantMessageId, content, false)
-                            }
-
-                            if (isFinal || parsed.event === "message_complete") {
-                                // Terminal event; don't block UI waiting for the upstream stream to close.
-                                shouldStop = true
-                            }
-                        }
-                    }
-
-                    if (shouldStop) {
-                        break
-                    }
-                }
-            } finally {
-                window.clearTimeout(requestTimeoutId)
-                if (shouldStop) {
-                    try {
-                        await reader.cancel()
-                    } catch {
-                        // ignore
-                    }
-                }
-            }
-
-            if (!assistantMessageId) {
-                assistantMessageId = uuidv4()
-                addTranscriptMessage(
-                    assistantMessageId,
-                    "assistant",
-                    finalAssistantText || "No response text was returned.",
-                    false,
-                    "agent_builder",
-                )
-            }
-            updateTranscriptItemStatus(assistantMessageId, "DONE")
-
-            addTranscriptBreadcrumb(
-                `Agent Builder text response complete${agentBuilderConversationIdRef.current ? ` (${agentBuilderConversationIdRef.current})` : ""}`,
-                {
-                    selectedRealtimeAgentName: selectedAgentName,
-                    conversationId: agentBuilderConversationIdRef.current,
-                },
-                "agent_builder",
-            )
-        } catch (error) {
-            const reason = error instanceof Error ? error.message : "Unknown Agent Builder chat failure"
-
-            if (!assistantMessageId) {
-                assistantMessageId = uuidv4()
-                addTranscriptMessage(
-                    assistantMessageId,
-                    "assistant",
-                    "Agent Builder request failed. Check logs for details.",
-                    false,
-                    "agent_builder",
-                )
-            }
-            updateTranscriptItemStatus(assistantMessageId, "DONE")
-
-            addTranscriptBreadcrumb("Agent Builder text request failed", { reason }, "agent_builder")
-            logServerEvent(
-                {
-                    type: "agent_builder.chat.error",
-                    reason,
-                    selectedRealtimeAgentName: selectedAgentName,
-                },
-                "",
-                "agent_builder",
-            )
-        } finally {
-            setIsAgentBuilderSending(false)
-        }
+        sendClientEvent({ type: "response.create" }, "trigger response")
     }
 
     // Function to send simulated user message
@@ -694,7 +371,6 @@ export function useRealtimeConnection({
 
     // Update session configuration
     const updateSession = (shouldTriggerResponse: boolean = false, agentName = selectedAgentName) => {
-        updateSessionCounterRef.current++
         console.log(`[SESSION] updateSession with agent: ${selectedAgentName}, trigger: ${shouldTriggerResponse}`)
 
         const currentAgent = selectedAgentConfigSet?.find((a) => a.name === agentName)
@@ -783,7 +459,6 @@ export function useRealtimeConnection({
 
     // Push-to-talk handlers
     const handleTalkButtonDown = () => {
-        if (!isRealtimeVoiceMode) return
         if (sessionStatus !== "CONNECTED" || dataChannel?.readyState !== "open") return
         responseCoordinatorRef.current?.beginInput()
         cancelAssistantSpeech()
@@ -794,7 +469,6 @@ export function useRealtimeConnection({
     }
 
     const handleTalkButtonUp = () => {
-        if (!isRealtimeVoiceMode) return
         if (sessionStatus !== "CONNECTED" || dataChannel?.readyState !== "open" || !isPTTUserSpeaking) return
 
         setIsPTTUserSpeaking(false)
@@ -844,21 +518,10 @@ export function useRealtimeConnection({
         }
     }, [isAudioPlaybackEnabled, remoteStream])
 
-    // Ensure realtime connection is disabled in Agent Builder text mode.
-    useEffect(() => {
-        if (!isRealtimeVoiceMode && (sessionStatus === "CONNECTED" || sessionStatus === "CONNECTING")) {
-            disconnectFromRealtime()
-        }
-    }, [isRealtimeVoiceMode, sessionStatus])
-
-    // Defer until mount effects and saved mode/agent settings settle. StrictMode
+    // Defer until mount effects and agent settings settle. StrictMode
     // cancels its first scheduled attempt before starting the replayed effect.
     useEffect(() => {
         if (!autoConnect) return
-        if (!isRealtimeVoiceMode) {
-            autoConnectAttemptedRef.current = false
-            return
-        }
         if (!selectedAgentConfigSet?.some((agent) => agent.name === selectedAgentName) || sessionStatus !== "DISCONNECTED") return
         if (autoConnectAttemptedRef.current || deliberatelyDisconnectedRef.current) return
         const timer = setTimeout(() => {
@@ -866,7 +529,7 @@ export function useRealtimeConnection({
             void connectToRealtime()
         }, 0)
         return () => clearTimeout(timer)
-    }, [autoConnect, isRealtimeVoiceMode, selectedAgentName, selectedAgentConfigSet, sessionStatus])
+    }, [autoConnect, selectedAgentName, selectedAgentConfigSet, sessionStatus])
 
     // Release media on unmount; a cancelled startup never becomes a retry loop.
     useEffect(() => () => {
@@ -883,7 +546,7 @@ export function useRealtimeConnection({
 
     // Configure once per agent/PTT change. A handoff continues from the tool output instead of injecting "hi".
     useEffect(() => {
-        if (!isRealtimeVoiceMode || sessionStatus !== "CONNECTED" || !selectedAgentConfigSet || !selectedAgentName) return
+        if (sessionStatus !== "CONNECTED" || !selectedAgentConfigSet || !selectedAgentName) return
         const firstAgent = initializedAgentRef.current === null
         const agentChanged = initializedAgentRef.current !== selectedAgentName
         if (agentChanged) addTranscriptBreadcrumb(`Agent: ${selectedAgentName}`)
@@ -894,7 +557,7 @@ export function useRealtimeConnection({
         }
         handoffConfiguredAgentRef.current = null
         updateSession(firstAgent)
-    }, [selectedAgentConfigSet, selectedAgentName, sessionStatus, isRealtimeVoiceMode, isPTTActive])
+    }, [selectedAgentConfigSet, selectedAgentName, sessionStatus, isPTTActive])
 
     return {
         // Connection state
@@ -930,6 +593,6 @@ export function useRealtimeConnection({
         handleTalkButtonUp,
 
         // Helper to check if sending is possible
-        canSend: isRealtimeVoiceMode ? sessionStatus === "CONNECTED" && dcRef.current?.readyState === "open" : !isAgentBuilderSending,
+        canSend: sessionStatus === "CONNECTED" && dcRef.current?.readyState === "open",
     }
 }

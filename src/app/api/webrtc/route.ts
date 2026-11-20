@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { Client } from "@elastic/elasticsearch"
-import { InvalidRequestError, readRequestObject } from "@/app/lib/agent-builder-kibana"
+import { InvalidRequestError, readRequestObject } from "@/app/lib/request-json"
 import { sanitizeTelemetry } from "@/app/lib/telemetry-safety"
 
 let esClient: Client | undefined

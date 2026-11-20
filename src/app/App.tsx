@@ -1,6 +1,6 @@
 "use client"
 
-import React, { Suspense, useEffect, useRef, useState } from "react"
+import React, { Suspense, useEffect, useRef } from "react"
 import { ErrorBoundary } from "react-error-boundary"
 
 // Components
@@ -16,7 +16,6 @@ import { useRealtimeConnection } from "./hooks/useRealtimeConnection"
 import { useEventsPaneState } from "./hooks/useEventsPaneState"
 import { useSupportHandoff } from "./hooks/useSupportHandoff"
 import { useTranscript } from "./contexts/TranscriptContext"
-import { ConversationMode } from "./types"
 
 // Loading component for Suspense
 function Loading() {
@@ -39,7 +38,6 @@ function ErrorFallback({ error }: { error: Error }) {
 }
 
 function Logic() {
-    const [conversationMode, setConversationMode] = useState<ConversationMode>("realtime_voice_mirror")
     const shellRef = useRef<HTMLDivElement>(null)
 
     useEffect(() => {
@@ -60,19 +58,8 @@ function Logic() {
         }
     }, [])
 
-    useEffect(() => {
-        const savedMode = localStorage.getItem("conversationMode")
-        if (savedMode === "realtime_voice_mirror" || savedMode === "agent_builder_text") {
-            setConversationMode(savedMode)
-        }
-    }, [])
-
-    useEffect(() => {
-        localStorage.setItem("conversationMode", conversationMode)
-    }, [conversationMode])
-
     // Use custom hooks for different aspects of the application
-    const { selectedAgentName, setSelectedAgentName, selectedAgentConfigSet, handleSelectedAgentChange, agentSetKey } =
+    const { selectedAgentName, setSelectedAgentName, selectedAgentConfigSet, handleSelectedAgentChange } =
         useAgentSelection()
 
     const { isEventsPaneExpanded, setIsEventsPaneExpanded } = useEventsPaneState()
@@ -103,22 +90,18 @@ function Logic() {
         selectedAgentName,
         setSelectedAgentName,
         selectedAgentConfigSet,
-        conversationMode,
         autoConnect: false,
     })
 
     return (
         <div ref={shellRef} className="app-shell text-slate-900">
             <Header
-                agentSetKey={agentSetKey}
                 selectedAgentName={selectedAgentName}
                 selectedAgentConfigSet={selectedAgentConfigSet}
                 onAgentChange={handleSelectedAgentChange}
-                conversationMode={conversationMode}
-                onConversationModeChange={setConversationMode}
             />
 
-            {microphoneRequired && conversationMode === "realtime_voice_mirror" && !handoff.open && (
+            {microphoneRequired && !handoff.open && (
                 <MicrophoneRequiredDialog onRetry={onToggleConnection} onSample={handoff.openSample} />
             )}
             <SupportHandoffDialog handoff={handoff} />
@@ -154,8 +137,7 @@ function Logic() {
                 isEventsPaneExpanded={isEventsPaneExpanded}
                 sessionStatus={sessionStatus}
                 selectedAgentName={selectedAgentName}
-                conversationMode={conversationMode}
-                canDraftHandoff={selectedAgentName === "Elastic" && conversationMode === "realtime_voice_mirror" && handoff.canDraft}
+                canDraftHandoff={selectedAgentName === "Elastic" && handoff.canDraft}
                 hasHandoffRun={handoff.hasRun}
                 onDraftHandoff={handoff.openCall}
                 onViewHandoff={handoff.view}
@@ -163,7 +145,6 @@ function Logic() {
             />
 
             <BottomToolbar
-                conversationMode={conversationMode}
                 sessionStatus={sessionStatus}
                 onToggleConnection={onToggleConnection}
                 isPTTActive={isPTTActive}

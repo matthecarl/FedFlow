@@ -128,7 +128,7 @@ body {
 .brand-mark { display: grid; place-items: center; min-width: 44px; min-height: 44px; border-radius: .75rem; }
 .brand-mark:hover { background: #f1f5f9; }
 .brand-caption { color: #52647b; font-size: .85rem; font-family: Inter, sans-serif; font-weight: 400; }
-.header-controls { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: .75rem; width: min(100%, 29rem); }
+.header-controls { min-width: 0; width: min(100%, 14rem); }
 .control-label { display: block; font-size: .65rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: #617186; margin-bottom: .25rem; }
 .header-controls .select { min-width: 0; min-height: 44px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 20 20'%3E%3Cpath d='m5 7 5 5 5-5' fill='none' stroke='%23617186' stroke-width='1.5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right .75rem center; }
 .workspace { display: flex; flex: 1; flex-direction: column; min-height: 0; padding-bottom: clamp(.5rem, 1.4vh, 1.25rem); }
@@ -185,7 +185,7 @@ body {
 }
 @media (max-width: 760px) {
   .header-inner { flex-wrap: wrap; gap: .5rem; padding-block: .5rem; }
-  .header-controls { width: 100%; gap: .5rem; }
+  .header-controls { width: 100%; }
   .brand-mark { min-height: 32px; min-width: 32px; }
   .session-visual { display: none; }
   .session-strip { min-height: 3rem; flex-wrap: wrap; gap: .35rem; }
@@ -211,7 +211,7 @@ body {
 @media (max-height: 540px) {
   .header-inner { padding-block: .35rem; }
   .control-label, .brand-caption, .session-visual { display: none; }
-  .header-controls { width: min(58%, 26rem); }
+  .header-controls { width: min(58%, 14rem); }
   .header-inner { flex-wrap: nowrap; }
   .brand { flex: 1; }
   .brand-mark { display: none; }

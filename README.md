@@ -1,6 +1,6 @@
-# Realtime API Agents RAG Demo
+# FedFlow — voice support and cited handoffs
 
-A Next.js voice application that combines OpenAI Realtime with Elasticsearch retrieval. The FedFlow assessment adds a durable support handoff: a reviewer selects an excerpt from an Elastic support call, then gets a draft with sources and a proposed next step. Agent Builder text chat and observability are optional integrations.
+A Next.js application for voice and typed conversations through OpenAI Realtime, grounded in an existing Elasticsearch knowledge base. After an Elastic support conversation, a reviewer approves a transcript excerpt and requests a durable draft handoff with sources and a proposed next step.
 
 ![Screenshot of the Realtime API Agents Demo](public/screenshot.png)
 
@@ -12,9 +12,9 @@ Use Node.js 22 or newer and npm. Install the locked dependencies:
 npm ci
 ```
 
-For a new checkout, copy `.env.example` to `.env.local` and supply credentials. If an environment file already exists, update its existing keys rather than creating conflicting definitions. Never put API keys in `NEXT_PUBLIC_*` variables or commit real environment files.
+For local development, configure the following server-side variables in an untracked `.env.local`. Use this table as the active configuration reference. If the file already exists, update its existing keys rather than creating conflicting definitions. Never put API keys in `NEXT_PUBLIC_*` variables or commit real environment files.
 
-The voice and retrieval demo requires:
+The active demo uses:
 
 | Variable | Purpose |
 | --- | --- |
@@ -23,7 +23,7 @@ The voice and retrieval demo requires:
 | `OPENAI_API_KEY` | Server-side OpenAI key with Realtime access and available quota |
 | `OPENAI_REALTIME_MODEL` | Optional; defaults to `gpt-realtime-2.1-mini` |
 | `ELASTICSEARCH_CAPSTONE_URL` | Elasticsearch HTTPS endpoint |
-| `ELASTICSEARCH_CAPSTONE_API_KEY` | Encoded API key permitted to read the five indices and use their inference services |
+| `ELASTICSEARCH_CAPSTONE_API_KEY` | Encoded API key permitted to read the required indices and use their inference services |
 | `HANDOFF_RECEIPT_SECRET` | Random secret of at least 32 characters for signing handoff receipts. Configure it separately in Preview and local development |
 | `AI_GATEWAY_API_KEY` | For local handoff generation when Vercel OIDC is unavailable. The linked Vercel project uses OIDC |
 
@@ -33,7 +33,7 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000), sign in as `demo` with your `DEMO_PASSWORD`, then select **Connect** and allow microphone access. Elastic is the default specialist. If the browser blocks audio autoplay, select **Enable audio**. Microphone access requires localhost or HTTPS. **Try sample call** opens the handoff form without starting a voice session.
 
-Realtime voice requires a working microphone even for typed messages. Denied/unavailable microphone access, or a connection timeout while waiting for the microphone, opens a blocking recovery dialog. Allow access in browser/site and device settings, then use **Refresh and try again** and accept the prompt when the app reconnects. Alternatively, **I've enabled my microphone — reconnect** retries without reloading. Refreshing alone does not clear a saved permission denial. Network failures retain the normal connection error instead of this dialog.
+Typed messages use the same OpenAI Realtime session as voice and currently require a working microphone. Denied/unavailable microphone access, or a connection timeout while waiting for the microphone, opens a recovery dialog. Allow access in browser/site and device settings, then use **Refresh and try again** or **I've enabled my microphone — reconnect**. Refreshing alone does not clear a saved permission denial. Use **Try sample call** to exercise the handoff without a microphone.
 
 HTTP Basic authentication is on by default. The handoff API always requires the demo login. The framework-generated Workflow queue callback has its own authentication, so the Next.js proxy leaves that route to Workflow. User-facing API responses are private and uncached. Browsers remember Basic credentials. Use a private window for reviewer testing and close it after the demo. Rotating the password requires a new deployment. Older deployments retain their configuration and access settings.
 
@@ -50,6 +50,19 @@ Specialist handoffs retain the Realtime conversation and explicitly pass `user_q
 The browser sends only the excerpt you approve. Vercel Workflows checkpoints the post-call retrieval and generation steps. The AI SDK uses GPT-5 mini through AI Gateway and the application resolves citations against the existing Search Labs index. The live audio session is separate and ends when the page reloads. Drafts require human review before being used in support.
 
 See [assessment notes](docs/assessment.md) for architecture, evaluation, rollout, and the reviewer script.
+
+## Vercel features in this demo
+
+| Feature | Where it is used |
+| --- | --- |
+| AI SDK | Structured handoff generation and model usage data in `src/app/workflows/support-handoff.ts` |
+| AI Gateway | The handoff model call to `openai/gpt-5-mini`; the live OpenAI Realtime connection has a separate path and bill |
+| Workflows | Checkpointed retrieval and generation, bounded retries, and recovery of the same handoff run after a tab refresh |
+| Vercel Functions | Next.js server routes for short-lived Realtime credentials, external Elasticsearch retrieval, and starting or reading handoff runs |
+| Preview Deployments | Commit-specific review and validation before production promotion |
+| Vercel Board — development only | Private, unsynced coordination between the coding and review agents that built the demo |
+
+Board is development tooling. Runtime support data comes from Elasticsearch, the approved browser excerpt, and the handoff Workflow. See [architecture](architecture.md) for the separate voice and handoff paths.
 
 ## Data sources
 
@@ -72,27 +85,6 @@ curl --user demo --fail-with-body 'http://localhost:3000/api/elasticsearch?q=Wha
 ```
 
 Enter the demo password at curl's prompt. When `DEMO_PASSWORD_ENABLED=false`, omit `--user demo` to skip that prompt. A successful response contains a `results` array. Review the returned passages and sources as well as the HTTP status.
-
-## Optional Agent Builder and observability
-
-**Agent Builder text mode** requires `KIBANA_URL` and an explicit `KIBANA_API_KEY` with access to the selected space and Agent Builder. Alternatively, set `KIBANA_USERNAME` and `KIBANA_PASSWORD`. Search and event-ingestion keys are never reused as Kibana credentials. If omitted, the Kibana URL can be derived from an Elasticsearch hostname containing `.es.`.
-
-- `AGENT_BUILDER_AGENT_ID` defaults to `elastic-ai-agent`.
-- `AGENT_BUILDER_AGENT_MAP_JSON` optionally maps Realtime agent names to Agent Builder agent IDs.
-- `KIBANA_SPACE_ID` selects a non-default space.
-- Agent Builder model selection is controlled by Kibana and its inference configuration.
-
-**Voice mirroring** is disabled by default. Set `NEXT_PUBLIC_AGENT_BUILDER_MIRROR_ENABLED=true` to send voice/text turns to Agent Builder in addition to OpenAI. This performs additional processing; it is not passive logging. Rebuild after changing this public setting.
-
-**Persisted Agent Builder events** additionally require `ELASTICSEARCH_LOGSAI_API_KEY` with append/create-document permission on the pre-created event index. `AGENT_BUILDER_INDEX_NAME` defaults to `agent-builder-chat-events-v1`. It uses `ELASTICSEARCH_CAPSTONE_URL`.
-
-**Full transcript capture** is disabled by default. Set `TELEMETRY_CAPTURE_FULL_CONTENT=true` only when you intend telemetry and persisted events to include conversation content. Credential redaction still applies.
-
-**FullStory** is disabled by default and requires both `NEXT_PUBLIC_ENABLE_FULLSTORY=true` and `NEXT_PUBLIC_FULLSTORY_ORG_ID`. Rebuild after changing these public settings.
-
-**OpenTelemetry** initializes in production. For local development, enable it with `ENABLE_OTEL=true`. Configure `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_SERVICE_NAME` for your collector; the exporters use HTTP/protobuf. Optional browser RUM configuration uses `NEXT_PUBLIC_ELASTIC_APM_SERVER_URL`, `NEXT_PUBLIC_ELASTIC_APM_SERVICE_NAME`, and optional environment/version values. Client transport can be selected with `NEXT_PUBLIC_TELEMETRY_TRANSPORT=server|rum|both`; `NEXT_PUBLIC_TELEMETRY_MIRROR_TO_RUM=false` avoids duplicate RUM mirroring.
-
-The optional email action requires a server-side `ZAP_URL` webhook. Leave it unset when email delivery is not part of your demo.
 
 ## Validation and demo rehearsal
 
@@ -121,7 +113,7 @@ Before recording:
 4. Ask to switch to VA or another agent, then ask a relevant question. Check the answer and source links.
 5. Interrupt an answer; exercise push-to-talk and audio playback controls.
 6. Disconnect and reconnect. Confirm microphone capture stops after disconnect and no repeated automatic retries occur on errors.
-7. Test Agent Builder text mode separately if it is part of the recording.
+7. Use **Try sample call**, generate a handoff, refresh while pending, and verify the recovered result and its citations.
 
 The conversation transcript includes messages and expandable tool details. The agent selector changes the active agent; the event panel helps diagnose requests and responses. Keep diagnostic panels closed for the recording when they are not needed.
 
@@ -135,7 +127,7 @@ Build and test a preview before promoting it. Verify the project, deployment URL
 
 Agent prompts, tool schemas, and tool implementations live in [`src/app/agentConfigs`](src/app/agentConfigs). Start with [`elasticBlogsAgent.ts`](src/app/agentConfigs/semanticSearch/elasticBlogsAgent.ts). Retrieval routes live under `src/app/api`; the shared search implementation is [`utility.ts`](src/app/api/utility.ts).
 
-The main flow is browser → OpenAI Realtime → tool call → Next.js retrieval route → Elasticsearch → spoken response. Agent Builder and telemetry run as separate integrations.
+The conversation flow is browser ↔ OpenAI Realtime, with tool calls executed by the browser through a Next.js retrieval route to Elasticsearch. The handoff flow is approved excerpt → Next.js route → Workflow → Elasticsearch retrieval → AI Gateway generation → reviewed draft.
 
 ## Core contributors
 

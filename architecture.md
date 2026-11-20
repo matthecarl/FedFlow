@@ -1,181 +1,77 @@
-# OpenAI Realtime Agents Architecture
+# FedFlow architecture
 
-## System Architecture and Data Flow
+FedFlow connects a Next.js support interface on Vercel to an existing Elasticsearch knowledge base. Voice and typed conversation use OpenAI Realtime. A separate, reviewer-approved handoff uses Vercel AI SDK, AI Gateway, and Workflows.
 
-```
-                                                                 +-------------------+
-                                                                 |                   |
-                                                                 |   OpenTelemetry   |
-                                 +--------------------------->   |   Collectors      |
-                                 |                               |                   |
-                                 |                               +--------+----------+
-                                 |                                        |
-                                 |                                        v
-                                 |                                +-----------------+
-                                 |                                |  (DISCOVER)     |
-                                 |                                |   Elastic       |
-                                 |                                |                 |
-                                 |                                |                 |
-                                 |                                +-----------------+
-                                 |
-+-------------+                  |                                 +------------------+
-|             |                  |                                 |   (VECTOR DB)    |
-|  Browser    |    +---------+   |       +------------+            |   Elasticsearch  |
-|  Client     | <--+ Next.js  +--+       |            |            |   Service        |
-|             | +-->  App      <---------+  OpenAI     < --------  |                  |
-+------+------+    |         |    +------>  Realtime  |            +--------+---------+
-       v           +---------+   |       |  API       |                      ^
-       |                         |       |            |                      |
-       |           +---------+   |       +------------+                      |
-       |           |         |   |                                           |
-       +--------+--+ Events   +-+                                            |
-                   | Context | +------------------->  +--------------+       |
-                   |         |                       |               |       |
-                   +---------+                       |  Medicare, VA +------+
-                                                     |  IRS, Blogs   |
-                                                     |  API Services |
-                                                     |               |
-                                                      +--------------+
+## Conversation and retrieval
 
-
+```mermaid
+flowchart LR
+  Browser[Browser: voice and typed messages]
+  Realtime[OpenAI Realtime]
+  Elastic[External Elasticsearch]
+  subgraph Vercel
+    Session[Function: short-lived credential]
+    Search[Function: retrieval API]
+  end
+  Browser -->|request credential| Session
+  Session -->|server-side authentication| Realtime
+  Session -->|short-lived credential| Browser
+  Browser <-->|WebRTC media and data| Realtime
+  Browser -->|execute retrieval tool call| Search
+  Search <-->|authenticated HTTPS search| Elastic
+  Search -->|passages and source URLs| Browser
+  Browser -->|tool result| Realtime
 ```
 
-## Component Description
+The standard OpenAI and Elasticsearch API keys remain server-side. The browser uses a short-lived OpenAI credential. Typed messages share the Realtime connection and currently require the same microphone permission as voice. The browser executes retrieval tool calls through the server; OpenAI does not connect directly to Elasticsearch.
 
-### Client-Side Components
+The assessment uses the existing `search-labs-blogs` index and its `body_semantic` field. The other specialist routes read their configured indices on the same external service. The app does not crawl source sites, populate indices, or replace Elasticsearch ingestion and relevance management.
 
-1. **Browser Client**: The user interface where users interact with the application.
+## Durable support handoff
 
-2. **Next.js App**: The main web application framework:
+```mermaid
+flowchart LR
+  Browser[Browser: approved excerpt]
+  Elastic[External Elasticsearch: Search Labs]
+  DraftModel[OpenAI: GPT-5 mini]
+  subgraph Vercel
+    API[Functions: start and read handoff]
+    Workflow[Workflow: retrieve then generate]
+    Gateway[AI Gateway]
+  end
+  Browser -->|question and reviewed excerpt| API
+  API -->|start run| Workflow
+  API -->|signed receipt| Browser
+  Workflow <-->|read-only retrieval| Elastic
+  Workflow -->|AI SDK structured generation| Gateway
+  Gateway -->|model request| DraftModel
+  Browser -->|poll with receipt| API
+  API -->|run status and result| Browser
+```
 
-    - Renders the UI
-    - Manages client-side routing
-    - Serves as the application container
+The Workflow checkpoints the retrieval and generation steps and owns their bounded retry budget. The approved excerpt, retrieved evidence, and draft are part of the run data. A signed, expiring receipt stored in the browser tab lets it read the same run after a refresh. The recovered handoff is separate from the live audio session, which ends on reload.
 
-3. **Events Context**: Manages the state of events in the application:
+The server accepts only citation IDs from the retrieved evidence and returns their validated Elastic URLs. It rejects malformed drafts and can return insufficient evidence. A human must still verify that the recommendation is supported. The sample call uses synthetic text with the same live retrieval and generation path.
 
-    - Tracks event streams
-    - Maintains event history
-    - Provides event dispatching
+## Vercel responsibilities
 
-4. **Agent Configs**: Contains configuration for various AI agents:
+| Feature | Responsibility |
+| --- | --- |
+| AI SDK | Structured generation and usage metadata for the handoff |
+| AI Gateway | Model routing for the handoff's `openai/gpt-5-mini` call |
+| Workflows | Persistent handoff run and step execution |
+| Vercel Functions | Next.js credential, retrieval, and handoff API routes |
+| Preview Deployments | Commit-specific verification before promotion |
+| Vercel Board — development only | Private task coordination and review evidence for coding agents |
 
-    - Defines agent behaviors
-    - Specifies metadata and capabilities
-    - Configures agent-specific parameters
+OpenAI Realtime media and conversation inference are outside the Gateway handoff path. Elasticsearch remains the knowledge source. Board belongs to the development process and does not hold runtime support conversations.
 
-5. **Client Telemetry**: Collects client-side metrics and events:
-    - Captures user interactions
-    - Monitors performance
-    - Tracks usage patterns
-    - Records token usage
+## Access, failures, and validation
 
-### Server-Side Components
+- HTTP Basic authentication protects the demo; the handoff API always requires the demo login. The Workflow queue callback uses the SDK's own authentication.
+- User-facing API responses are private and uncached. Deployment readiness does not prove upstream model, credential, or retrieval health.
+- A failed browser poll can resume the existing run using its receipt. A failed initial submission can require a new request; submission retries are not an exactly-once guarantee.
+- Source content can be stale or insufficient. Retrieval failures and generation failures have separate bounded retries and sanitized errors.
+- The demo uses public or synthetic data. A production pilot needs individual identity, run authorization, explicit retention and residency decisions, and usage controls.
 
-1. **OpenAI Realtime API**: The core AI service:
-
-    - Processes realtime requests
-    - Handles streaming responses
-    - Manages conversation context
-    - Provides tool calling capabilities
-
-2. **Elasticsearch Service**: Knowledge base for semantic search:
-
-    - Indexes documents
-    - Provides vector search capabilities
-    - Stores searchable content
-
-3. **Medicare/VA API Services**: Domain-specific data providers:
-
-    - Offer structured data access
-    - Provide specialized information
-    - Support agent knowledge base
-
-4. **Telemetry Endpoint**: Central collection point for metrics:
-
-    - Receives client-side telemetry
-    - Processes and aggregates metrics
-    - Forwards data to observability systems
-
-5. **OpenTelemetry Collectors**: Distributed tracing infrastructure:
-
-    - Collects traces and spans
-    - Processes telemetry data
-    - Routes to storage backends
-
-6. **Elastic Search (Observability)**: Storage for monitoring data:
-
-    - Long-term metrics storage
-    - Enables data visualization
-    - Supports observability
-
-7. **Observability & Monitoring**: Analysis of system health:
-    - Dashboards for system metrics
-    - Alerting on anomalies
-    - Performance monitoring
-
-## Data Flow
-
-### Primary Flows
-
-1. **User Interaction Flow**:
-
-    - User interacts with Browser Client
-    - Next.js App processes interactions
-    - Requests flow to OpenAI Realtime API
-    - Responses return through the Events Context
-    - UI updates with received data
-
-2. **Knowledge Base Flow**:
-
-    - OpenAI calls for external data
-    - Requests route to Elasticsearch Service
-    - Domain services (Medicare/VA) provide specialized data
-    - Data flows back to OpenAI for context augmentation
-    - Results incorporate into responses
-
-3. **Telemetry Flow**:
-    - Client Telemetry collects metrics
-    - Data transmits to Telemetry Endpoint
-    - OpenTelemetry processes and aggregates
-    - Metrics store in Elastic Search
-    - Observability tools visualize the data
-
-### Bidirectional Communications
-
-1. **Client ↔ Server**:
-
-    - Browser ↔ Next.js: UI rendering and user input
-    - Next.js ↔ OpenAI: AI requests and streaming responses
-    - Client ↔ Telemetry: Metrics collection and status feedback
-
-2. **Server ↔ Services**:
-    - Next.js ↔ Elasticsearch: Knowledge retrieval
-    - Next.js ↔ Domain APIs: Specialized data access
-    - Telemetry ↔ Observability: Monitoring and analysis
-
-## Key Features
-
-1. **Realtime Response**:
-
-    - Streaming AI responses
-    - Immediate feedback loops
-    - Progressive rendering
-
-2. **Context Awareness**:
-
-    - Persistent conversation state
-    - Knowledge augmentation
-    - Domain-specific understanding
-
-3. **Comprehensive Telemetry**:
-
-    - Token usage tracking (including cached tokens)
-    - Performance metrics
-    - Error monitoring
-    - Response quality analysis
-
-4. **Specialized Agents**:
-    - Domain-configured behaviors
-    - Targeted knowledge bases
-    - Use-case optimized responses
+For the reviewer script, pilot measures, and rollout plan, see [assessment notes](docs/assessment.md). For setup and exact verification commands, see [README](README.md).

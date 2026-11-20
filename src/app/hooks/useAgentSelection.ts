@@ -67,13 +67,10 @@ export function useAgentSelection() {
         setSelectedAgentName(newAgentName)
     }
 
-    const agentSetKey = searchParams?.get("agentConfig") || defaultAgentSetKey
-
     return {
         selectedAgentName,
         setSelectedAgentName,
         selectedAgentConfigSet,
         handleSelectedAgentChange,
-        agentSetKey,
     }
 }

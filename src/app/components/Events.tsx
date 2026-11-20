@@ -83,11 +83,6 @@ function Events({ isExpanded }: EventsProps) {
                     <div className="min-w-0 flex-1">
                       <div className={"truncate text-sm " + (isError ? "text-red-600" : "text-slate-900")}>
                         {log.eventName}
-                        {log.sourceBackend && (
-                          <span className="ml-2 text-[10px] uppercase tracking-wide text-slate-500">
-                            [{log.sourceBackend}]
-                          </span>
-                        )}
                       </div>
                       <div className="mt-0.5 text-xs text-slate-500">{log.timestamp}</div>
                     </div>

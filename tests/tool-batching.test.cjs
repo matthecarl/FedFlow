@@ -16,7 +16,7 @@ function fixture(toolLogic = {}) {
         },
         globals: { window: {}, localStorage: { getItem: () => "test-user" }, console: { log() {}, warn() {}, error() {} } },
     })
-    const handle = api.useHandleServerEvent({ selectedAgentName: "IRS", selectedAgentConfigSet: [{ name: "IRS", toolLogic }, { name: "Medicare" }], sendClientEvent: event => sent.push(event), setSelectedAgentName() {}, mirrorTurn: async () => ({}) }).current
+    const handle = api.useHandleServerEvent({ selectedAgentName: "IRS", selectedAgentConfigSet: [{ name: "IRS", toolLogic }, { name: "Medicare" }], sendClientEvent: event => sent.push(event), setSelectedAgentName() {} }).current
     return { handle, sent, breadcrumbs }
 }
 function deferred() {

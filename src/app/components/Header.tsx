@@ -1,17 +1,14 @@
 import React from "react"
 import Image from "next/image"
-import { AgentConfig, ConversationMode } from "@/app/types"
+import { AgentConfig } from "@/app/types"
 
 interface HeaderProps {
-    agentSetKey: string
     selectedAgentName: string
     selectedAgentConfigSet: AgentConfig[] | null
     onAgentChange: (e: React.ChangeEvent<HTMLSelectElement>) => void
-    conversationMode: ConversationMode
-    onConversationModeChange: (mode: ConversationMode) => void
 }
 
-export function Header({ agentSetKey, selectedAgentName, selectedAgentConfigSet, onAgentChange, conversationMode, onConversationModeChange }: HeaderProps) {
+export function Header({ selectedAgentName, selectedAgentConfigSet, onAgentChange }: HeaderProps) {
     return (
         <header className="app-header">
             <div className="app-container header-inner">
@@ -23,21 +20,12 @@ export function Header({ agentSetKey, selectedAgentName, selectedAgentConfigSet,
                         <div className="font-mierb text-lg leading-tight">FedFlow <span className="brand-caption">/ Support desk</span></div>
                     </div>
                 </div>
-                {agentSetKey && (
+                {selectedAgentConfigSet && (
                     <div className="header-controls">
-                        <div className="min-w-0">
-                            <label htmlFor="mode-select" className="control-label">Mode</label>
-                            <select id="mode-select" value={conversationMode} onChange={(e) => onConversationModeChange(e.target.value as ConversationMode)} className="select">
-                                <option value="realtime_voice_mirror">Realtime voice</option>
-                                <option value="agent_builder_text">Text via Agent Builder</option>
-                            </select>
-                        </div>
-                        <div className="min-w-0">
-                            <label htmlFor="agent-select" className="control-label">Agent</label>
-                            <select id="agent-select" value={selectedAgentName} onChange={onAgentChange} className="select">
-                                {selectedAgentConfigSet?.map((agent) => <option key={agent.name} value={agent.name}>{agent.name === "greeter" ? "Greeter" : agent.name}</option>)}
-                            </select>
-                        </div>
+                        <label htmlFor="agent-select" className="control-label">Agent</label>
+                        <select id="agent-select" value={selectedAgentName} onChange={onAgentChange} className="select">
+                            {selectedAgentConfigSet.map((agent) => <option key={agent.name} value={agent.name}>{agent.name === "greeter" ? "Greeter" : agent.name}</option>)}
+                        </select>
                     </div>
                 )}
             </div>

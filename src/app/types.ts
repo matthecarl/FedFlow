@@ -1,6 +1,4 @@
 export type SessionStatus = "DISCONNECTED" | "CONNECTING" | "CONNECTED"
-export type ConversationMode = "realtime_voice_mirror" | "agent_builder_text"
-export type BackendSource = "realtime" | "agent_builder_mirror" | "agent_builder"
 
 export interface ToolParameterProperty {
     type: string
@@ -44,7 +42,6 @@ export interface TranscriptItem {
     role?: "user" | "assistant" | "system"
     title?: string
     data?: Record<string, any>
-    sourceBackend?: BackendSource
     expanded: boolean
     timestamp: string
     createdAtMs: number
@@ -119,24 +116,6 @@ export interface LoggedEvent {
     timestamp: string
     eventName: string
     eventData: Record<string, any> // can have arbitrary objects logged
-    sourceBackend?: BackendSource
-}
-
-export interface MirrorTurnRequest {
-    text: string
-    role: "user" | "assistant"
-    selectedRealtimeAgentName?: string
-    conversationId?: string | null
-    metadata?: Record<string, any>
-}
-
-export interface MirrorTurnResult {
-    success: boolean
-    status: "mirrored" | "skipped" | "failed"
-    conversationId: string | null
-    agentId: string
-    mappedFromRealtimeAgent?: string | null
-    reason?: string
 }
 
 /**
@@ -146,7 +125,6 @@ export interface UseRealtimeConnectionProps {
     selectedAgentName: string
     setSelectedAgentName: (name: string) => void
     selectedAgentConfigSet: AgentConfig[] | null
-    conversationMode: ConversationMode
     autoConnect?: boolean
 }
 
@@ -159,7 +137,6 @@ export interface UseHandleServerEventParams {
     selectedAgentConfigSet: AgentConfig[] | null
     sendClientEvent: (eventObj: any, eventNameSuffix?: string) => void
     setSelectedAgentName: (name: string) => void
-    mirrorTurn: (request: MirrorTurnRequest) => Promise<MirrorTurnResult>
 }
 
 export interface TokenUsage {
@@ -187,49 +164,11 @@ export type AudioDancerComponentProps = {
     isMobile?: boolean
 }
 
-export type AgentBuilderChatRole = "user" | "assistant" | "system" | "tool"
-
-export interface AgentBuilderChatMessage {
-    id: string
-    role: AgentBuilderChatRole
-    content: string
-    timestamp: string
-    status: "streaming" | "complete" | "error"
-    eventType?: string
-    raw?: Record<string, any>
-}
-
-export interface AgentBuilderSseEvent {
-    event: string
-    data: unknown
-}
-
-export interface AgentBuilderPersistedEvent {
-    eventType: string
-    timestamp: string
-    role?: AgentBuilderChatRole
-    content?: string
-    status?: string
-    toolName?: string
-    latencyMs?: number
-    raw?: Record<string, any>
-}
-
 export interface ClientTelemetryEnvelope {
     eventType: string
     eventData: Record<string, unknown>
     timestamp?: string
     schemaVersion?: "v1"
-}
-
-export interface AgentBuilderChatState {
-    messages: AgentBuilderChatMessage[]
-    isStreaming: boolean
-    conversationId: string | null
-    streamStatus: string | null
-    error: string | null
-    sendMessage: (input: string) => Promise<boolean>
-    resetConversation: () => void
 }
 
 declare global {

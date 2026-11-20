@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
-import { ConversationMode, SessionStatus, TranscriptItem } from "@/app/types"
+import { SessionStatus, TranscriptItem } from "@/app/types"
 import Image from "next/image"
 import { redactEventData } from "./Events"
 import { useTranscript } from "@/app/contexts/TranscriptContext"
@@ -12,12 +12,11 @@ export interface TranscriptProps {
     setUserText: (val: string) => void
     onSendMessage: () => void
     canSend: boolean
-    conversationMode?: ConversationMode
     sessionStatus?: SessionStatus
     prompts?: readonly { label: string; question: string }[]
 }
 
-function Transcript({ userText, setUserText, onSendMessage, canSend, conversationMode = "realtime_voice_mirror", sessionStatus = "DISCONNECTED", prompts }: TranscriptProps) {
+function Transcript({ userText, setUserText, onSendMessage, canSend, sessionStatus = "DISCONNECTED", prompts }: TranscriptProps) {
     const { transcriptItems, toggleTranscriptItemExpand } = useTranscript()
     const transcriptRef = useRef<HTMLDivElement | null>(null)
     const [prevLogs, setPrevLogs] = useState<TranscriptItem[]>([])
@@ -74,11 +73,11 @@ function Transcript({ userText, setUserText, onSendMessage, canSend, conversatio
                         <div className="conversation-empty">
                             <h1>{prompts ? <>Elastic support,<br /><span>by voice.</span></> : "Ask a specialist"}</h1>
                             {prompts && <p className="empty-description">Talk through an issue, then use the conversation to draft a cited handoff for the next engineer.</p>}
-                            <p className="empty-connection" role="status">{conversationMode === "agent_builder_text" ? "Type a question below to begin." : sessionStatus === "CONNECTING" ? "Allow microphone access when asked." : sessionStatus === "CONNECTED" ? "You’re connected. Ask your first question out loud." : "Select Connect to start a call."}</p>
+                            <p className="empty-connection" role="status">{sessionStatus === "CONNECTING" ? "Allow microphone access when asked." : sessionStatus === "CONNECTED" ? "Say or type your first question." : "Select Connect to start a call."}</p>
                         </div>
                     )}
                     {transcriptItems.map((item) => {
-                        const { itemId, type, role, data, expanded, timestamp, title = "", isHidden, sourceBackend } = item
+                        const { itemId, type, role, data, expanded, timestamp, title = "", isHidden } = item
 
                         if (isHidden) {
                             return null
@@ -102,10 +101,7 @@ function Transcript({ userText, setUserText, onSendMessage, canSend, conversatio
                                                 isUser ? "text-slate-300" : "text-slate-500"
                                             }`}
                                         >
-                                            {timestamp}{" "}
-                                            {sourceBackend && (
-                                                <span className="ml-1 uppercase tracking-wide">[{sourceBackend}]</span>
-                                            )}
+                                            {timestamp}
                                         </div>
                                         <div className={`mt-1 whitespace-pre-wrap leading-relaxed ${messageStyle}`}>
                                             <ReactMarkdown
@@ -144,10 +140,7 @@ function Transcript({ userText, setUserText, onSendMessage, canSend, conversatio
                                     className="flex flex-col items-start justify-start text-sm text-slate-600"
                                 >
                                     <span className="text-[11px] font-mono text-slate-500">
-                                        {timestamp}{" "}
-                                        {sourceBackend && (
-                                            <span className="ml-1 uppercase tracking-wide">[{sourceBackend}]</span>
-                                        )}
+                                        {timestamp}
                                     </span>
                                     <div
                                         className={`mt-1 flex items-center whitespace-pre-wrap rounded-xl border border-transparent px-2 py-1 font-mono text-sm text-slate-900 ${

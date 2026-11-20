@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, FC, PropsWithChildren } from "react"
 import { v4 as uuidv4 } from "uuid"
-import { BackendSource, TranscriptItem } from "@/app/types"
+import { TranscriptItem } from "@/app/types"
 
 type TranscriptContextValue = {
     transcriptItems: TranscriptItem[]
@@ -11,10 +11,9 @@ type TranscriptContextValue = {
         role: "user" | "assistant",
         text: string,
         hidden?: boolean,
-        sourceBackend?: BackendSource,
     ) => void
     updateTranscriptMessage: (itemId: string, text: string, isDelta: boolean) => void
-    addTranscriptBreadcrumb: (title: string, data?: Record<string, any>, sourceBackend?: BackendSource) => void
+    addTranscriptBreadcrumb: (title: string, data?: Record<string, any>) => void
     toggleTranscriptItemExpand: (itemId: string) => void
     updateTranscriptItemStatus: (itemId: string, newStatus: "IN_PROGRESS" | "DONE") => void
 }
@@ -38,7 +37,6 @@ export const TranscriptProvider: FC<PropsWithChildren> = ({ children }) => {
         role,
         text = "",
         isHidden = false,
-        sourceBackend = "realtime",
     ) => {
         setTranscriptItems((prev) => {
             if (prev.some((log) => log.itemId === itemId && log.type === "MESSAGE")) {
@@ -58,7 +56,6 @@ export const TranscriptProvider: FC<PropsWithChildren> = ({ children }) => {
                 createdAtMs: Date.now(),
                 status: "IN_PROGRESS",
                 isHidden,
-                sourceBackend,
             }
 
             return [...prev, newItem]
@@ -86,7 +83,6 @@ export const TranscriptProvider: FC<PropsWithChildren> = ({ children }) => {
     const addTranscriptBreadcrumb: TranscriptContextValue["addTranscriptBreadcrumb"] = (
         title,
         data,
-        sourceBackend = "realtime",
     ) => {
         setTranscriptItems((prev) => [
             ...prev,
@@ -100,7 +96,6 @@ export const TranscriptProvider: FC<PropsWithChildren> = ({ children }) => {
                 createdAtMs: Date.now(),
                 status: "DONE",
                 isHidden: false,
-                sourceBackend,
             },
         ])
     }

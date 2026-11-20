@@ -30,7 +30,6 @@ export function useHandleServerEvent({
     selectedAgentConfigSet,
     sendClientEvent,
     setSelectedAgentName,
-    mirrorTurn,
 }: UseHandleServerEventParams) {
     // Access to transcript state and methods
     const {
@@ -634,19 +633,6 @@ export function useHandleServerEvent({
 
         // Record user transcript for telemetry
         recordUserTranscript(event)
-
-        if (finalTranscript !== "[inaudible]") {
-            void mirrorTurn({
-                text: finalTranscript,
-                role: "user",
-                selectedRealtimeAgentName: selectedAgentName,
-                metadata: {
-                    inputType: "voice_transcription",
-                    itemId,
-                    eventId: event.event_id,
-                },
-            })
-        }
     }
 
     /**
@@ -684,38 +670,6 @@ export function useHandleServerEvent({
             if (event.response.status === "completed") {
                 recordFullTranscript(event.response)
             }
-        }
-
-        const responseOutputItems = event.response.output as any[]
-        const firstAssistantOutputWithText = responseOutputItems.find((outputItem: any) => {
-            if (!outputItem || outputItem.type !== "message") {
-                return false
-            }
-
-            return (
-                outputItem.content?.some((content: any) => typeof content?.transcript === "string" && content.transcript.trim()) ||
-                outputItem.content?.some((content: any) => typeof content?.text === "string" && content.text.trim())
-            )
-        })
-
-        const assistantText =
-            firstAssistantOutputWithText?.content?.find((content: any) => typeof content?.transcript === "string" && content.transcript.trim())
-                ?.transcript ||
-            firstAssistantOutputWithText?.content?.find((content: any) => typeof content?.text === "string" && content.text.trim())
-                ?.text ||
-            ""
-
-        if (assistantText) {
-            void mirrorTurn({
-                text: assistantText,
-                role: "assistant",
-                selectedRealtimeAgentName: selectedAgentName,
-                metadata: {
-                    sourceEventType: "response.done",
-                    responseStatus: event.response.status,
-                    eventId: event.event_id,
-                },
-            })
         }
 
         // Failed, cancelled, or incomplete responses must not execute side effects.

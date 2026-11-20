@@ -4,17 +4,16 @@ const assert = require("node:assert/strict")
 const load = require("./helpers/load-typescript.cjs")
 
 const { draftFromTranscript } = load("src/app/hooks/useSupportHandoff.ts", { dependencies: { react: {} } })
-const message = (role, title, fields = {}) => ({ role, title, type: "MESSAGE", status: "DONE", isHidden: false, sourceBackend: "realtime", ...fields })
+const message = (role, title, fields = {}) => ({ role, title, type: "MESSAGE", status: "DONE", isHidden: false, ...fields })
 
 test("the reviewed excerpt stays within the current call and excludes hidden or unfinished turns", () => {
     const draft = draftFromTranscript([
         message("user", "Previous call"),
-        { type: "BREADCRUMB", title: "Agent: Elastic", sourceBackend: "realtime" },
+        { type: "BREADCRUMB", title: "Agent: Elastic" },
         message("user", "Simulated greeting", { isHidden: true }),
         message("user", "Can we combine keyword and semantic search?"),
         message("assistant", "We can consider reciprocal rank fusion."),
         message("user", "[Transcribing...]", { status: "IN_PROGRESS" }),
-        message("user", "Unrelated Agent Builder input", { sourceBackend: "agent_builder" }),
     ])
     assert.equal(draft.question, "Can we combine keyword and semantic search?")
     assert.equal(draft.transcript, "Caller: Can we combine keyword and semantic search?\n\nSpecialist: We can consider reciprocal rank fusion.")

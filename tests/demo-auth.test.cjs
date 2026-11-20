@@ -69,7 +69,7 @@ test("preflight and internal-looking headers do not bypass credential checking",
 
 test("the Next matcher protects API, data, static, image, and dotted paths", () => {
     const { config } = gate()
-    for (const url of ["/", "/api/session", "/api/agent-builder/events", "/api/elasticsearch?q=test", "/api/support/handoffs", "/_next/data/build/index.json", "/_next/static/chunks/app.js", "/_next/image?url=%2Fimage.png&w=100&q=75", "/favicon.ico", "/private.json", "/error-test", "/.well-known/workflow/v1/webhook/unused", "/.well-known/workflow/v1/flow-extra", "/foo/.well-known/workflow/v1/flow"]) {
+    for (const url of ["/", "/api/session", "/api/webrtc", "/api/elasticsearch?q=test", "/api/support/handoffs", "/_next/data/build/index.json", "/_next/static/chunks/app.js", "/_next/image?url=%2Fimage.png&w=100&q=75", "/favicon.ico", "/private.json", "/error-test", "/.well-known/workflow/v1/webhook/unused", "/.well-known/workflow/v1/flow-extra", "/foo/.well-known/workflow/v1/flow"]) {
         assert.equal(unstable_doesMiddlewareMatch({ config, nextConfig: {}, url }), true, url)
     }
     for (const url of ["/.well-known/workflow/v1/flow", "/.well-known/workflow/v1/flow/?retry=1"]) {

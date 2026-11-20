@@ -128,7 +128,6 @@ function eventFixture(telemetryOverrides = {}, transcriptItems = []) {
         selectedAgentConfigSet: [{ name: "greeter" }, { name: "elastic" }, { name: "IRS", instructions: "Use IRS sources." }, { name: "Medicare" }],
         sendClientEvent: event => sent.push(event),
         setSelectedAgentName() {},
-        mirrorTurn: async () => ({}),
     }).current
     return { handler, sent, updates, messages, statuses }
 }
@@ -240,11 +239,9 @@ test("connection timeout leaves Connecting even while microphone permission rema
                     return new Promise(() => {})
                 },
             },
-            "@/app/lib/agent-builder-sse": {},
             "@/app/contexts/TranscriptContext": { useTranscript: () => ({ addTranscriptBreadcrumb() {} }) },
             "@/app/contexts/EventContext": { useEvent: () => ({ logClientEvent: event => events.push(event), logServerEvent() {} }) },
             "./useHandleServerEvent": { useHandleServerEvent: () => ({ current() {} }) },
-            "./useAgentBuilderMirror": { useAgentBuilderMirror: () => ({ mirrorTurn() {} }) },
             "../lib/client-telemetry": {},
         },
         globals: {
@@ -255,7 +252,7 @@ test("connection timeout leaves Connecting even while microphone permission rema
             clearTimeout() {},
         },
     })
-    const hook = api.useRealtimeConnection({ selectedAgentName: "greeter", selectedAgentConfigSet: [], conversationMode: "realtime_voice_mirror", setSelectedAgentName() {} })
+    const hook = api.useRealtimeConnection({ selectedAgentName: "greeter", selectedAgentConfigSet: [], setSelectedAgentName() {} })
     hook.onToggleConnection()
     // Allow the token response body to be read before the deliberately pending media request.
     for (let i = 0; i < 20 && !connectionSignal; i++) await Promise.resolve()
@@ -334,11 +331,9 @@ for (const failure of [
                         onStage(failure.stage); throw failure.error
                     },
                 },
-                '@/app/lib/agent-builder-sse': {},
                 '@/app/contexts/TranscriptContext': { useTranscript: () => ({ addTranscriptBreadcrumb() {} }) },
                 '@/app/contexts/EventContext': { useEvent: () => ({ logClientEvent() {}, logServerEvent() {} }) },
                 './useHandleServerEvent': { useHandleServerEvent: () => ({ current() {} }) },
-                './useAgentBuilderMirror': { useAgentBuilderMirror: () => ({ mirrorTurn() {} }) },
                 '../lib/client-telemetry': {},
             },
             globals: {
@@ -348,7 +343,7 @@ for (const failure of [
                 setTimeout: () => 1, clearTimeout() {},
             },
         })
-        const hook = api.useRealtimeConnection({ selectedAgentName: 'greeter', selectedAgentConfigSet: [], conversationMode: 'realtime_voice_mirror', setSelectedAgentName() {} })
+        const hook = api.useRealtimeConnection({ selectedAgentName: 'greeter', selectedAgentConfigSet: [], setSelectedAgentName() {} })
         hook.onToggleConnection()
         for (let i = 0; i < 40 && states[0].value !== 'DISCONNECTED'; i++) await Promise.resolve()
         assert.equal(states[0].value, 'DISCONNECTED')
@@ -379,11 +374,9 @@ test("typed input waits for greeting cancellation acknowledgement before creatin
                 pc: { addEventListener() {}, getSenders: () => [], close() {} }, dc,
                 localStream: { getTracks: () => [] },
             }) } },
-            "@/app/lib/agent-builder-sse": {},
             "@/app/contexts/TranscriptContext": { useTranscript: () => ({ addTranscriptBreadcrumb() {} }) },
             "@/app/contexts/EventContext": { useEvent: () => ({ logClientEvent: (event) => { if (event.stage === "data_channel_open") channelReady = true }, logServerEvent() {} }) },
             "./useHandleServerEvent": { useHandleServerEvent: props => { sendEvent = props.sendClientEvent; return { current() {} } } },
-            "./useAgentBuilderMirror": { useAgentBuilderMirror: () => ({ mirrorTurn() {} }) },
             "../lib/client-telemetry": { recordServerEvent() {} },
         },
         globals: {
@@ -392,7 +385,7 @@ test("typed input waits for greeting cancellation acknowledgement before creatin
             setTimeout: () => 1, clearTimeout() {},
         },
     })
-    const hook = api.useRealtimeConnection({ selectedAgentName: "greeter", selectedAgentConfigSet: [], conversationMode: "realtime_voice_mirror", setSelectedAgentName() {} })
+    const hook = api.useRealtimeConnection({ selectedAgentName: "greeter", selectedAgentConfigSet: [], setSelectedAgentName() {} })
     hook.onToggleConnection()
     for (let i = 0; i < 30 && !channelReady; i++) await Promise.resolve()
     assert.equal(channelReady, true)
@@ -413,10 +406,10 @@ test("typed input waits for greeting cancellation acknowledgement before creatin
     assert.equal(sent.filter(event => event.type === "response.create").length, 2)
 })
 
-function automaticConnectionFixture({ fail = false, mode = "realtime_voice_mirror", agents = [{ name: "greeter" }] } = {}) {
+function automaticConnectionFixture({ fail = false, agents = [{ name: "greeter" }] } = {}) {
     const refs = [], states = [], effects = [], timers = new Map()
     let refIndex = 0, stateIndex = 0, nextTimer = 0, requests = 0
-    const props = { selectedAgentName: "greeter", selectedAgentConfigSet: agents, conversationMode: mode, setSelectedAgentName() {} }
+    const props = { selectedAgentName: "greeter", selectedAgentConfigSet: agents, setSelectedAgentName() {} }
     const api = load("src/app/hooks/useRealtimeConnection.ts", {
         dependencies: {
             react: {
@@ -431,11 +424,9 @@ function automaticConnectionFixture({ fail = false, mode = "realtime_voice_mirro
             uuid: { v4: () => "test" },
             "@/app/lib/realtimeResponseCoordinator": responseCoordinator,
             "@/app/lib/realtimeConnection": { createRealtimeConnection: () => new Promise(() => {}) },
-            "@/app/lib/agent-builder-sse": {},
             "@/app/contexts/TranscriptContext": { useTranscript: () => ({ addTranscriptBreadcrumb() {} }) },
             "@/app/contexts/EventContext": { useEvent: () => ({ logClientEvent() {}, logServerEvent() {} }) },
             "./useHandleServerEvent": { useHandleServerEvent: () => ({ current() {} }) },
-            "./useAgentBuilderMirror": { useAgentBuilderMirror: () => ({ mirrorTurn() {} }) },
             "../lib/client-telemetry": {},
         },
         globals: {
@@ -451,7 +442,7 @@ function automaticConnectionFixture({ fail = false, mode = "realtime_voice_mirro
         render() {
             refIndex = 0; stateIndex = 0; effects.length = 0
             const hook = api.useRealtimeConnection(props)
-            const auto = effects.find(({ deps }) => deps?.length === 5 && typeof deps[0] === "boolean").effect
+            const auto = effects.find(({ deps }) => deps?.length === 4 && typeof deps[0] === "boolean").effect
             return { hook, auto }
         },
         runScheduledStart() {
@@ -493,18 +484,11 @@ test("manual voice mode waits for Connect so reviewers can use the sample withou
     assert.equal(fixture.requests(), 1)
 })
 
-test("automatic connection waits for agent setup and cancels default voice attempt when saved text mode hydrates", () => {
+test("automatic connection waits for the selected agent to become available", () => {
     const fixture = automaticConnectionFixture({ agents: [] })
     fixture.render().auto()
     assert.equal(fixture.timers.size, 0)
     fixture.props.selectedAgentConfigSet = [{ name: "greeter" }]
-    const cleanup = fixture.render().auto()
-    cleanup()
-    fixture.props.conversationMode = "agent_builder_text"
-    fixture.render().auto()
-    fixture.runScheduledStart()
-    assert.equal(fixture.requests(), 0)
-    fixture.props.conversationMode = "realtime_voice_mirror"
     fixture.render().auto()
     fixture.runScheduledStart()
     assert.equal(fixture.requests(), 1)
