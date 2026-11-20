@@ -39,7 +39,10 @@ export function proxy(request: NextRequest) {
                 status: 401,
                 headers: {
                     ...privateHeaders,
-                    "WWW-Authenticate": 'Basic realm="FedFlow demo", charset="UTF-8"',
+                    // A background telemetry request should never open a sign-in prompt.
+                    ...(!/^\/api\/telemetry\/?$/.test(pathname) && {
+                        "WWW-Authenticate": 'Basic realm="FedFlow demo", charset="UTF-8"',
+                    }),
                 },
             })
         }

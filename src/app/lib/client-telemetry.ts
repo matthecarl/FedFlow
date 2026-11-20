@@ -66,6 +66,7 @@ async function postTelemetry(eventType: string, eventData: Record<string, unknow
         keepalive: true,
     })
 
+    if (response.status === 401) return
     if (!response.ok) {
         const body = await response.text().catch(() => "")
         // Don't throw: Next dev overlay will show this as a "Console Error" and it distracts during demos.

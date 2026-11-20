@@ -10,7 +10,8 @@ const DRAIN_SAMPLE_MS = 75
 const DRAIN_QUIET_SECONDS = 2.2
 const AUDIBLE_RMS = 0.004
 const QUIET_RMS = 0.0015
-const RECENT_PLAYBACK_MS = 400
+const RECENT_PLAYBACK_MS = DRAIN_QUIET_SECONDS * 1000 + 300
+const MAX_SAMPLE_AGE_MS = 400
 
 /** Detect a quiet tail only after observing the reply's audio and generation completion. */
 export function watchWebRtcPlayback(readSample: () => PlaybackSample | null, onDrained: () => void): WebRtcPlaybackWatch {
@@ -20,6 +21,7 @@ export function watchWebRtcPlayback(readSample: () => PlaybackSample | null, onD
     let quietSince: number | undefined
     let previousTime: number | undefined
     let lastAudibleAt: number | undefined
+    let lastProgressAt: number | undefined
     let timer: ReturnType<typeof setTimeout>
 
     const stop = () => {
@@ -32,10 +34,12 @@ export function watchWebRtcPlayback(readSample: () => PlaybackSample | null, onD
         if (!sample || (previousTime !== undefined && sample.time <= previousTime)) {
             quietSince = undefined
             lastAudibleAt = undefined
+            lastProgressAt = undefined
         } else {
+            lastProgressAt = performance.now()
             if (sample.rms >= AUDIBLE_RMS) {
                 heardReply = true
-                lastAudibleAt = performance.now()
+                lastAudibleAt = lastProgressAt
             }
             if (doneGenerating && heardReply && sample.rms <= QUIET_RMS) {
                 // Gaps larger than the sampled window provide no evidence of
@@ -57,7 +61,9 @@ export function watchWebRtcPlayback(readSample: () => PlaybackSample | null, onD
     return {
         stop,
         hasRecentPlayback() {
-            return !stopped && lastAudibleAt !== undefined && performance.now() - lastAudibleAt < RECENT_PLAYBACK_MS
+            const now = performance.now()
+            return !stopped && lastAudibleAt !== undefined && now - lastAudibleAt < RECENT_PLAYBACK_MS &&
+                lastProgressAt !== undefined && now - lastProgressAt < MAX_SAMPLE_AGE_MS
         },
         generationCompleted() {
             doneGenerating = true

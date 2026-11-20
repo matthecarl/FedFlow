@@ -134,3 +134,12 @@ test("disabled password gate strips cached Authorization credentials before hand
     assert.equal(response.headers.get("x-middleware-request-x-request-id"), "disabled-gate-check")
     assert.ok(!JSON.stringify([...response.headers]).includes(password))
 })
+
+test("background telemetry denies unauthenticated requests without a browser sign-in challenge", () => {
+    const { proxy } = gate({ DEMO_PASSWORD: password, DEMO_PASSWORD_ENABLED: "false" })
+    const response = proxy(request("/api/telemetry", { origin: "https://demo.example" }, "POST"))
+    assert.equal(response.status, 401)
+    assert.equal(response.headers.get("www-authenticate"), null)
+    assert.match(proxy(request("/api/session", {}, "POST")).headers.get("www-authenticate"), /^Basic/)
+    assertPrivate(response)
+})

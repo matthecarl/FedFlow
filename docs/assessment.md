@@ -66,7 +66,7 @@ Score each case on the expected status, official citation and claim support, abs
 | Fabricated source ID, unlisted inline `[S#]` citation, bare domain, or Markdown link | Insufficient evidence with no citations |
 | Search timeout or provider error | Sanitized failure with bounded retry behavior |
 | Tampered or expired receipt, missing run, or temporary outage | Terminal `404` for unavailable runs or invalid receipts, retryable `503` for an outage |
-| Lost start response, concurrent retry, or refresh | Same attempt key, same Workflow run and receipt |
+| Lost start response, concurrent retry, or refresh | Same attempt key and draft recover the same Workflow run and receipt. Reusing the key for an edited draft returns `409`. |
 
 Targeted live checks exercised the microphone-free BioGuide sample and recovered the same Workflow draft after refresh, citing official record `A000041`. The `47c262c` preview also completed Greeter → IRS and IRS → VA transfers with synthetic microphone input, including 27.3 seconds of outgoing IRS playback before held speech was processed. The earlier Elastic specialist scored four of five cases on a strict live evaluator. One draft echoed a fabricated citation marker in prose. [BioGuide preview commit](https://github.com/matthecarl/FedFlow/commit/b73b7258969c0eb4e317f1dc86bedf79323789e2) · [Voice preview commit](https://github.com/matthecarl/FedFlow/commit/47c262c0b64b31507c83594106de8ff08115c82e)
 
@@ -80,7 +80,8 @@ Pilot targets are illustrative. Time five paired manual and assisted handoffs an
 
 ## Known limitations and risks
 
-- The preview uses shared credentials and signed receipts. New browser submissions use a Workflow start key to recover from duplicate POSTs. Its concurrency and retention tests exercised the local Workflow store. Older keyless API requests still create separate runs.
+- The preview uses shared credentials and signed receipts. A hosted test on `091a20b` confirmed two concurrent keyed requests and a retry after completion returned the same receipt. Reusing the key with a changed excerpt returned `409`. Older keyless API requests still create separate runs. [Verified commit](https://github.com/matthecarl/FedFlow/commit/091a20bb6b2e34b472243977c3e3edc2e9c14b3d)
+- The production dependency audit reports zero critical and three high findings after the compatible patches. The remaining high findings follow the Workflow CLI, its Vercel authentication helper, and that helper's nested Zod dependency.
 - If enabled, the optional email feature accepts caller-supplied recipients under the shared demo credential. A production pilot should require verified recipient authorization and delivery auditing before enabling it.
 - The Workflow persists the approved excerpt. Preview telemetry can export sanitized spoken transcripts to Elastic APM. Use public or synthetic conversation material until transcript access, retention, and deletion are agreed with the customer.
 - Elasticsearch is the sole evidence source. Missing evidence produces an abstention, and upstream outages can fail the draft. Retrieved text and transcripts can contain prompt injection. Citation validation constrains links and identifiers, and the analyst still reviews factual support.
