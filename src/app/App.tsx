@@ -59,7 +59,7 @@ function Logic() {
     }, [])
 
     // Use custom hooks for different aspects of the application
-    const { selectedAgentName, setSelectedAgentName, selectedAgentConfigSet, handleSelectedAgentChange } =
+    const { selectedAgentName, setSelectedAgentName, selectedAgentConfigSet } =
         useAgentSelection()
 
     const { isEventsPaneExpanded, setIsEventsPaneExpanded } = useEventsPaneState()
@@ -69,6 +69,7 @@ function Logic() {
     const {
         sessionStatus,
         connectionError,
+        isVoiceSwitchPending,
         microphoneRequired,
         audioPlaybackBlocked,
         retryAudioPlayback,
@@ -83,6 +84,7 @@ function Logic() {
         userText,
         setUserText,
         onToggleConnection,
+        selectVoiceAgent,
         handleSendTextMessage,
         handleTalkButtonDown,
         handleTalkButtonUp,
@@ -99,9 +101,15 @@ function Logic() {
             <Header
                 selectedAgentName={selectedAgentName}
                 selectedAgentConfigSet={selectedAgentConfigSet}
-                onAgentChange={handleSelectedAgentChange}
+                onAgentChange={(event) => selectVoiceAgent(event.target.value)}
                 agentSelectionDisabled={sessionStatus === "CONNECTING"}
             />
+
+            {isVoiceSwitchPending && (
+                <div className="app-container app-alert" role="status">
+                    <div className="audio-notice">Waiting for this reply to finish before switching specialists.</div>
+                </div>
+            )}
 
             {microphoneRequired && !handoff.open && (
                 <MicrophoneRequiredDialog onRetry={onToggleConnection} onSample={handoff.openSample} />

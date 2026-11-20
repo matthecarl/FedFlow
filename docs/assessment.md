@@ -46,7 +46,7 @@ Development agents use Vercel Board for task coordination and review evidence. A
 
 1. Open the commit-specific preview from the deck and sign in as `demo` with the supplied test password. If the deployment is protected, use the private link shared from Vercel.
 2. Select BioGuide, choose **Connect**, grant microphone access, and ask “What congressional offices did John Quincy Adams hold, and when?” Inspect the retrieved evidence, then select **Draft handoff**. **Try sample call** uses a synthetic excerpt and the same live dependencies without a microphone.
-3. Review the excerpt and select **Generate handoff**. Refresh after submitting, then open the recovered draft and follow its citations. The live audio session is separate from the recovered draft.
+3. Review the excerpt and select **Generate handoff**. Open the draft when it is ready and follow its citations. To demonstrate Workflow recovery, refresh while the draft runs and verify that the same draft returns.
 
 The public repository is [FedFlow](https://github.com/matthecarl/FedFlow/tree/codex/vercel-sa-demo). Keep the commit, preview URL, and actual run evidence together in the deck. Supply test credentials privately.
 

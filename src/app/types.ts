@@ -96,11 +96,13 @@ export interface ServerEvent {
         }[]
     }
     response?: {
+        id?: string
         output?: {
             type?: string
             name?: string
             arguments?: any
             call_id?: string
+            content?: { type?: string }[]
         }[]
         status_details?: {
             error?: any
@@ -140,6 +142,11 @@ export interface UseHandleServerEventParams {
     sendClientEvent: (eventObj: any, eventNameSuffix?: string) => void
     setSelectedAgentName: (name: string) => void
     switchVoiceAgent?: (name: string, context: VoiceHandoffContext) => boolean
+    deferAgentTransfer?: (
+        playback: { responseId?: string; hasAudio: boolean },
+        start: () => void,
+        cancel: (reason: string) => void,
+    ) => void
 }
 
 export type VoiceHandoffContext = { user_question: string; conversation_context: string }

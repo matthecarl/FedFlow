@@ -28,12 +28,21 @@ function normalizeUsage(usage?: Experimental_RealtimeUsage) {
 }
 
 class GatewaySession extends Experimental_AbstractRealtimeSession {
-    constructor(options: Experimental_RealtimeSessionOptions, private onStatus: (status: string) => void) {
+    constructor(
+        options: Experimental_RealtimeSessionOptions,
+        private onStatus: (status: string) => void,
+        private onPlaybackChange?: (isPlaying: boolean) => void,
+    ) {
         super(options)
+    }
+
+    get isAudioPlaying() {
+        return this.state.isPlaying
     }
 
     protected setState(key: string, value: unknown) {
         if (key === "status" && typeof value === "string") this.onStatus(value)
+        if (key === "isPlaying" && typeof value === "boolean") this.onPlaybackChange?.(value)
     }
 }
 
@@ -43,6 +52,7 @@ interface GatewayTransportOptions {
     config: Experimental_RealtimeSessionOptions["sessionConfig"]
     playbackEnabled: boolean
     onEvent: (event: WireEvent) => void
+    onPlaybackChange?: (isPlaying: boolean) => void
     onOpen: () => void
     onClose: () => void
     onError: () => void
@@ -99,7 +109,13 @@ export class GatewayRealtimeTransport {
             } else if (status === "disconnected") {
                 options.onClose()
             }
+        }, (isPlaying) => {
+            if (this.readyState === "open") options.onPlaybackChange?.(isPlaying)
         })
+    }
+
+    get isAudioPlaying() {
+        return this.session.isAudioPlaying
     }
 
     async connect(stream: MediaStream) {

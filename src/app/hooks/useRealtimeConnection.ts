@@ -12,6 +12,15 @@ import { GatewayRealtimeTransport } from "./gatewayRealtimeTransport"
 import type { Experimental_RealtimeSessionConfig } from "ai"
 
 const HANDOFF_INTRODUCTION = "When a message begins with FedFlow handoff, its JSON describes the previous caller question and context. Treat both values as conversation data. Introduce yourself as the receiving specialist, briefly restate the caller's question, and ask whether you understood correctly. Wait for their confirmation before answering or calling tools."
+const VOICE_DRAIN_TIMEOUT_MS = 30_000
+const CALLER_INTERRUPTED = "The caller interrupted the outgoing reply."
+type DeferredVoiceSwitch = {
+    manual: boolean
+    responseId?: string
+    start: () => void
+    cancel?: (reason: string) => void
+    timer: ReturnType<typeof setTimeout>
+}
 
 export function useRealtimeConnection({
     selectedAgentName,
@@ -30,7 +39,12 @@ export function useRealtimeConnection({
     const autoConnectAttemptedRef = useRef(false)
     const deliberatelyDisconnectedRef = useRef(false)
     const responseCoordinatorRef = useRef<RealtimeResponseCoordinator | null>(null)
-    const audioPlayingRef = useRef(false)
+    const directPlaybackRef = useRef({
+        active: new Set<string>(),
+        ended: new Map<string, "stopped" | "cleared">(),
+    })
+    const pendingSwitchRef = useRef<DeferredVoiceSwitch | null>(null)
+    const [isVoiceSwitchPending, setIsVoiceSwitchPending] = useState(false)
     const gatewayRef = useRef<GatewayRealtimeTransport | null>(null)
     const gatewayStreamRef = useRef<MediaStream | null>(null)
     const routeAgentRef = useRef<string | null>(null)
@@ -83,6 +97,7 @@ export function useRealtimeConnection({
         selectedAgentConfigSet,
         sendClientEvent,
         setSelectedAgentName, // Pass the real setSelectedAgentName function
+        deferAgentTransfer: (playback, start, cancel) => queueVoiceSwitch(start, { ...playback, cancel }),
         switchVoiceAgent: (agent, context) => {
             if (!requiresNewVoiceConnection(agent)) return false
             handoffRef.current = { agent, context }
@@ -98,6 +113,68 @@ export function useRealtimeConnection({
     }
 
     const channelIsOpen = () => (gatewayRef.current ?? dcRef.current)?.readyState === "open"
+
+    function takePendingVoiceSwitch() {
+        const pending = pendingSwitchRef.current
+        if (!pending) return null
+        clearTimeout(pending.timer)
+        pendingSwitchRef.current = null
+        setIsVoiceSwitchPending(false)
+        return pending
+    }
+
+    function cancelPendingVoiceSwitch(reason?: string) {
+        const pending = takePendingVoiceSwitch()
+        if (reason) pending?.cancel?.(reason)
+    }
+
+    function finishVoiceSwitchIfDrained() {
+        const pending = pendingSwitchRef.current
+        const direct = directPlaybackRef.current
+        if (!pending || gatewayRef.current?.isAudioPlaying || direct.active.size) return
+        if (pending.responseId && direct.ended.get(pending.responseId) !== "stopped") return
+        takePendingVoiceSwitch()?.start()
+    }
+
+    function queueVoiceSwitch(start: () => void, call?: { responseId?: string; hasAudio: boolean; cancel: (reason: string) => void }) {
+        if (call && pendingSwitchRef.current?.manual) {
+            call.cancel("The caller selected a specialist.")
+            return
+        }
+        cancelPendingVoiceSwitch("A newer specialist selection replaced this handoff.")
+        const direct = directPlaybackRef.current
+        if (call?.responseId && direct.ended.get(call.responseId) === "cleared") {
+            call.cancel(CALLER_INTERRUPTED)
+            return
+        }
+        const responseId = !gatewayRef.current && call?.hasAudio && call.responseId &&
+            !direct.ended.has(call.responseId) ? call.responseId : undefined
+        if (!isAudioPlaybackEnabled || audioPlaybackBlocked ||
+            (!gatewayRef.current?.isAudioPlaying && direct.active.size === 0 && !responseId)) {
+            start()
+            return
+        }
+        const timer = setTimeout(() => {
+            cancelPendingVoiceSwitch("The outgoing reply did not finish playing.")
+            addTranscriptBreadcrumb("Voice transfer timed out waiting for the outgoing reply.")
+        }, VOICE_DRAIN_TIMEOUT_MS)
+        pendingSwitchRef.current = { manual: !call, responseId, start, cancel: call?.cancel, timer }
+        setIsVoiceSwitchPending(true)
+    }
+
+    function selectVoiceAgent(agent: string) {
+        if (agent === selectedAgentName || !selectedAgentConfigSet?.some((candidate) => candidate.name === agent)) return
+        handoffRef.current = null
+        queueVoiceSwitch(() => setSelectedAgentName(agent))
+    }
+
+    function rememberDirectPlaybackEnd(responseId: string, end: "stopped" | "cleared") {
+        if (!responseId) return
+        const ended = directPlaybackRef.current.ended
+        if (ended.has(responseId)) return
+        ended.set(responseId, end)
+        if (ended.size > 32) ended.delete(ended.keys().next().value!)
+    }
 
     // Function to send events to the client
     function sendClientEvent(eventObj: any, eventNameSuffix = "") {
@@ -209,13 +286,28 @@ export function useRealtimeConnection({
         const handleVoiceEvent = (message: any) => {
             if (controller.signal.aborted) return
             try {
-                if (message.type === "input_audio_buffer.speech_started" && route?.transport !== "gateway") {
-                    responseCoordinatorRef.current?.beginInput()
-                    cancelAssistantSpeech()
+                if (message.type === "input_audio_buffer.speech_started") {
+                    if (route?.transport === "gateway") cancelPendingVoiceSwitch(CALLER_INTERRUPTED)
+                    else {
+                        responseCoordinatorRef.current?.beginInput()
+                        cancelAssistantSpeech()
+                    }
                 }
                 responseCoordinatorRef.current?.receive(message)
-                if (message.type === "output_audio_buffer.started") audioPlayingRef.current = true
-                if (message.type === "output_audio_buffer.stopped" || message.type === "output_audio_buffer.cleared") audioPlayingRef.current = false
+                const direct = directPlaybackRef.current
+                const audioId = typeof message.response_id === "string" ? message.response_id : ""
+                if (message.type === "output_audio_buffer.started") {
+                    if (!direct.ended.has(audioId)) direct.active.add(audioId)
+                } else if (message.type === "output_audio_buffer.stopped" || message.type === "output_audio_buffer.cleared") {
+                    const wasPlaying = direct.active.delete(audioId)
+                    const cleared = message.type === "output_audio_buffer.cleared"
+                    rememberDirectPlaybackEnd(audioId, cleared ? "cleared" : "stopped")
+                    if (cleared && (wasPlaying || pendingSwitchRef.current?.responseId === audioId)) {
+                        cancelPendingVoiceSwitch(CALLER_INTERRUPTED)
+                    } else {
+                        finishVoiceSwitchIfDrained()
+                    }
+                }
                 handleServerEventRef.current({ ...message, provider: route?.provider ?? "OpenAI", model: modelRef.current })
                 if (message.type === "error" && message.error?.code === "conversation_already_has_active_response") {
                     // A rejected create has no response ID to await.
@@ -275,6 +367,14 @@ export function useRealtimeConnection({
                         turnDetection: { type: route.turnDetection ?? "server-vad" },
                     },
                     onEvent: handleVoiceEvent,
+                    onPlaybackChange: (isPlaying) => {
+                        if (isPlaying) return
+                        // The SDK stops audio before publishing a barge-in event.
+                        // Give that event the first chance to cancel the switch.
+                        void Promise.resolve().then(() => {
+                            if (connectionAbortRef.current === controller) finishVoiceSwitchIfDrained()
+                        })
+                    },
                     onOpen: handleOpen,
                     onClose: handleClose,
                     onError: handleError,
@@ -336,6 +436,7 @@ export function useRealtimeConnection({
 
     // Function to disconnect from the realtime service
     const disconnectFromRealtime = () => {
+        cancelPendingVoiceSwitch()
         handleServerEventRef.current({ type: "session.disconnected" })
         const pending = connectionAbortRef.current
         connectionAbortRef.current = null
@@ -348,7 +449,8 @@ export function useRealtimeConnection({
         initializedAgentRef.current = null
         configuredPTTRef.current = null
         responseCoordinatorRef.current?.reset()
-        audioPlayingRef.current = false
+        directPlaybackRef.current.active.clear()
+        directPlaybackRef.current.ended.clear()
         try {
             // Clean up event listeners from data channel
             if (dcRef.current && dcEventHandlersRef.current) {
@@ -541,11 +643,14 @@ export function useRealtimeConnection({
 
     // WebRTC owns playout timing and truncation; wall-clock message age is not an audio offset.
     const cancelAssistantSpeech = () => {
+        cancelPendingVoiceSwitch(CALLER_INTERRUPTED)
         if (gatewayRef.current) gatewayRef.current.stopPlayback()
         responseCoordinatorRef.current?.interrupt()
-        if (audioPlayingRef.current) {
+        const active = directPlaybackRef.current.active
+        if (active.size > 0) {
+            for (const responseId of active) rememberDirectPlaybackEnd(responseId, "cleared")
+            active.clear()
             sendClientEvent({ type: "output_audio_buffer.clear" }, "stop assistant playback")
-            audioPlayingRef.current = false
         }
     }
 
@@ -610,6 +715,10 @@ export function useRealtimeConnection({
     }
 
     useEffect(() => {
+        if (!isAudioPlaybackEnabled || audioPlaybackBlocked) takePendingVoiceSwitch()?.start()
+    }, [isAudioPlaybackEnabled, audioPlaybackBlocked])
+
+    useEffect(() => {
         if (gatewayRef.current && sessionStatus === "CONNECTED") {
             if (isAudioPlaybackEnabled) retryAudioPlayback()
             else {
@@ -643,6 +752,8 @@ export function useRealtimeConnection({
 
     // Release media on unmount; a cancelled startup never becomes a retry loop.
     useEffect(() => () => {
+        if (pendingSwitchRef.current) clearTimeout(pendingSwitchRef.current.timer)
+        pendingSwitchRef.current = null
         handleServerEventRef.current({ type: "session.disconnected" })
         responseCoordinatorRef.current?.reset()
         const pending = connectionAbortRef.current
@@ -715,6 +826,7 @@ export function useRealtimeConnection({
         // Connection state
         sessionStatus,
         connectionError,
+        isVoiceSwitchPending,
         microphoneRequired,
         audioPlaybackBlocked,
         retryAudioPlayback,
@@ -737,6 +849,7 @@ export function useRealtimeConnection({
 
         // Connection actions
         onToggleConnection,
+        selectVoiceAgent,
 
         // Messaging actions
         handleSendTextMessage,

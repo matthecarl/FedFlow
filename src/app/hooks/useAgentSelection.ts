@@ -61,16 +61,9 @@ export function useAgentSelection() {
         }
     }, [selectedAgentName])
 
-    const handleSelectedAgentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-        const newAgentName = e.target.value
-        console.log(`[AGENT-SELECTION] Manual agent change via dropdown to "${newAgentName}"`)
-        setSelectedAgentName(newAgentName)
-    }
-
     return {
         selectedAgentName,
         setSelectedAgentName,
         selectedAgentConfigSet,
-        handleSelectedAgentChange,
     }
 }

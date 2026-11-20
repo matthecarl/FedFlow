@@ -31,6 +31,7 @@ export function useHandleServerEvent({
     sendClientEvent,
     setSelectedAgentName,
     switchVoiceAgent,
+    deferAgentTransfer,
 }: UseHandleServerEventParams) {
     // Access to transcript state and methods
     const {
@@ -699,10 +700,28 @@ export function useHandleServerEvent({
                     },
                 })
             }
-            void handleFunctionCall({ name: "transferAgents", call_id: transfer.call_id, arguments: transfer.arguments! }, scope)
-                .then((handledTransfer) => {
-                    if (!handledTransfer) scope.send({ type: "response.create" }, "explain invalid agent handoff")
-                })
+            const start = () => {
+                void handleFunctionCall({ name: "transferAgents", call_id: transfer.call_id, arguments: transfer.arguments! }, scope)
+                    .then((handledTransfer) => {
+                        if (!handledTransfer) scope.send({ type: "response.create" }, "explain invalid agent handoff")
+                    })
+            }
+            const cancel = (reason: string) => scope.send({
+                type: "conversation.item.create",
+                item: {
+                    type: "function_call_output",
+                    call_id: transfer.call_id,
+                    output: JSON.stringify({ did_transfer: false, reason }),
+                },
+            }, "cancel deferred agent transfer")
+            if (deferAgentTransfer) {
+                const hasAudio = event.response.output.some((item) =>
+                    item.content?.some((part) => part.type === "output_audio" || part.type === "audio"),
+                )
+                deferAgentTransfer({ responseId: event.response.id ?? event.response_id, hasAudio }, start, cancel)
+            } else {
+                start()
+            }
             return
         }
 

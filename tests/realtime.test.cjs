@@ -107,7 +107,7 @@ test("cancelling while microphone permission is pending releases the late-acquir
     assert.ok(state.closed >= 1)
 })
 
-function eventFixture(telemetryOverrides = {}, transcriptItems = []) {
+function eventFixture(telemetryOverrides = {}, transcriptItems = [], handlerOverrides = {}) {
     const sent = []
     const updates = []
     const messages = []
@@ -132,6 +132,7 @@ function eventFixture(telemetryOverrides = {}, transcriptItems = []) {
         selectedAgentConfigSet: [{ name: "greeter" }, { name: "elastic" }, { name: "IRS", instructions: "Use IRS sources." }, { name: "Medicare" }],
         sendClientEvent: event => sent.push(event),
         setSelectedAgentName() {},
+        ...handlerOverrides,
     }).current
     return { handler, sent, updates, messages, statuses }
 }
@@ -162,6 +163,24 @@ test("handoff configures destination before submitting tool output and continuin
     assert.equal(sent[1].item.type, "function_call_output")
     assert.equal(JSON.parse(sent[1].item.output).did_transfer, true)
     assert.equal(sent[2].response.tool_choice, "none")
+})
+
+test("spoken transfer response waits for the caller's playback and can acknowledge cancellation", () => {
+    let transfer
+    const { handler, sent } = eventFixture({}, [], {
+        deferAgentTransfer(playback, start, cancel) { transfer = { playback, start, cancel } },
+    })
+    handler({ type: "response.done", response: { id: "spoken", status: "completed", output: [
+        { type: "message", role: "assistant", content: [{ type: "output_audio" }] },
+        { type: "function_call", name: "transferAgents", call_id: "handoff", arguments: JSON.stringify({ destination_agent: "IRS" }) },
+    ] } })
+    assert.equal(transfer.playback.responseId, "spoken")
+    assert.equal(transfer.playback.hasAudio, true)
+    assert.equal(sent.length, 0)
+    transfer.cancel("The caller interrupted.")
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0].item.call_id, "handoff")
+    assert.equal(JSON.parse(sent[0].item.output).did_transfer, false)
 })
 
 test("IRS handoff carries the actual question as data and requests a confirmation-only introduction", () => {
@@ -518,7 +537,7 @@ test("failed automatic connection does not loop and explicit retry remains avail
     assert.equal(fixture.requests(), 2)
 })
 
-test("cross-provider handoff releases the old call before opening one microphone and carries the question once", async () => {
+function voiceTransferFixture() {
     const events = []
     const directMessages = []
     const gatewayMessages = []
@@ -526,11 +545,17 @@ test("cross-provider handoff releases the old call before opening one microphone
     const refs = [], states = [], effects = []
     const props = {
         selectedAgentName: "greeter",
-        selectedAgentConfigSet: [{ name: "greeter", instructions: "Greet." }, { name: "IRS", instructions: "Use IRS sources." }],
+        selectedAgentConfigSet: [
+            { name: "greeter", instructions: "Greet." },
+            { name: "IRS", instructions: "Use IRS sources." },
+            { name: "Elastic", instructions: "Use Elastic sources." },
+        ],
         setSelectedAgentName: (name) => { props.selectedAgentName = name },
         autoConnect: false,
     }
-    let refIndex = 0, stateIndex = 0, switchAgent
+    let refIndex = 0, stateIndex = 0, serverHandler, receiveDirect, receiveGateway, notifyGatewayPlayback
+    const timers = new Map()
+    let timerId = 0
     const directTrack = { stop: () => { events.push("stop direct microphone") } }
     const gatewayTrack = { stop: () => { events.push("stop gateway microphone") } }
     const directStream = { getTracks: () => [directTrack], getAudioTracks: () => [directTrack] }
@@ -555,6 +580,12 @@ test("cross-provider handoff releases the old call before opening one microphone
                         assert.equal(options.config.turnDetection.type, "semantic-vad")
                         assert.equal(options.agent, "IRS")
                         this.options = options
+                        this.isAudioPlaying = false
+                        receiveGateway = options.onEvent
+                        notifyGatewayPlayback = (isPlaying) => {
+                            this.isAudioPlaying = isPlaying
+                            options.onPlaybackChange?.(isPlaying)
+                        }
                     }
                     async connect(stream) {
                         assert.equal(stream, gatewayStream)
@@ -567,22 +598,25 @@ test("cross-provider handoff releases the old call before opening one microphone
                     close() { events.push("close gateway") }
                 },
             },
-            "@/app/lib/realtimeConnection": { createRealtimeConnection: async () => ({
-                pc: { addEventListener() {}, getSenders: () => [{ track: directTrack }], close() { events.push("close direct") } },
-                dc: {
-                    readyState: "open",
-                    addEventListener() {},
-                    removeEventListener() {},
-                    send(data) { directMessages.push(JSON.parse(data)) },
-                    close() {},
-                },
-                localStream: directStream,
-            }) },
+            "@/app/lib/realtimeConnection": { createRealtimeConnection: async (_token, _audio, _model, _signal, onMessage) => {
+                receiveDirect = (event) => onMessage({ data: JSON.stringify(event) })
+                return {
+                    pc: { addEventListener() {}, getSenders: () => [{ track: directTrack }], close() { events.push("close direct") } },
+                    dc: {
+                        readyState: "open",
+                        addEventListener() {},
+                        removeEventListener() {},
+                        send(data) { directMessages.push(JSON.parse(data)) },
+                        close() {},
+                    },
+                    localStream: directStream,
+                }
+            } },
             "@/app/contexts/TranscriptContext": {
                 useTranscript: () => ({ addTranscriptBreadcrumb: (...args) => breadcrumbs.push(args), addTranscriptMessage() {} }),
             },
             "@/app/contexts/EventContext": { useEvent: () => ({ logClientEvent() {}, logServerEvent() {} }) },
-            "./useHandleServerEvent": { useHandleServerEvent(params) { switchAgent = params.switchVoiceAgent; return { current() {} } } },
+            "./useHandleServerEvent": { useHandleServerEvent(params) { serverHandler = params; return { current() {} } } },
             "../lib/client-telemetry": { recordServerEvent() {} },
         },
         globals: {
@@ -591,13 +625,16 @@ test("cross-provider handoff releases the old call before opening one microphone
             fetch: async () => Response.json({ value: "test", model: "direct-test" }),
             navigator: { mediaDevices: {
                 async getUserMedia() {
-                    assert.ok(events.includes("close direct"))
-                    assert.ok(events.includes("stop direct microphone"))
+                    if (receiveDirect) {
+                        assert.ok(events.includes("close direct"))
+                        assert.ok(events.includes("stop direct microphone"))
+                    }
                     events.push("open gateway microphone")
                     return gatewayStream
                 },
             } },
-            setTimeout: () => 1, clearTimeout() {},
+            setTimeout: (run, delay) => { timers.set(++timerId, { run, delay }); return timerId },
+            clearTimeout: (id) => { timers.delete(id) },
         },
     })
     const render = () => {
@@ -607,18 +644,38 @@ test("cross-provider handoff releases the old call before opening one microphone
         const hook = api.useRealtimeConnection(props)
         return { hook, configure: effects.at(-1) }
     }
-    render().hook.onToggleConnection()
-    for (let i = 0; i < 30 && render().hook.sessionStatus !== "CONNECTED"; i++) await Promise.resolve()
-    assert.equal(render().hook.sessionStatus, "CONNECTED")
-    render().configure()
+    async function untilConnected() {
+        for (let i = 0; i < 30 && render().hook.sessionStatus !== "CONNECTED"; i++) await Promise.resolve()
+        assert.equal(render().hook.sessionStatus, "CONNECTED")
+        render().configure()
+    }
+
+    async function connect(agent = "greeter") {
+        props.selectedAgentName = agent
+        render().hook.onToggleConnection()
+        await untilConnected()
+    }
+
+    return {
+        props, events, directMessages, gatewayMessages, breadcrumbs, render, untilConnected, connect,
+        switchAgent: (...args) => serverHandler.switchVoiceAgent(...args),
+        defer: (...args) => serverHandler.deferAgentTransfer(...args),
+        direct: (message) => receiveDirect(message),
+        gateway: (message) => receiveGateway(message),
+        gatewayPlayback: (value) => notifyGatewayPlayback(value),
+        expire: () => [...timers.values()].sort((a, b) => b.delay - a.delay)[0].run(),
+    }
+}
+
+test("cross-provider handoff releases the old call before opening one microphone and carries the question once", async () => {
+    const { events, directMessages, gatewayMessages, breadcrumbs, render, untilConnected, connect, switchAgent } = voiceTransferFixture()
+    await connect()
 
     const context = { user_question: "How do I request a tax transcript?", conversation_context: "Caller needs the official process." }
     assert.equal(switchAgent("IRS", context), true)
     assert.equal(render().hook.canSend, false)
     render().configure()
-    for (let i = 0; i < 30 && render().hook.sessionStatus !== "CONNECTED"; i++) await Promise.resolve()
-    assert.equal(render().hook.sessionStatus, "CONNECTED")
-    render().configure()
+    await untilConnected()
     assert.equal(render().hook.supportsPushToTalk, false)
     assert.equal(gatewayMessages.filter((event) => event.type === "response.create").length, 1)
     assert.equal(gatewayMessages[0].item.content[0].text, `FedFlow handoff: ${JSON.stringify(context)}`)
@@ -628,4 +685,84 @@ test("cross-provider handoff releases the old call before opening one microphone
     render().hook.onToggleConnection()
     assert.ok(events.includes("close gateway"))
     assert.ok(events.includes("stop gateway microphone"))
+})
+
+test("an OpenAI transfer waits for the matching output buffer to drain", async () => {
+    const fixture = voiceTransferFixture()
+    await fixture.connect()
+    const direct = fixture.direct
+    direct({ type: "output_audio_buffer.started", response_id: "announcement" })
+    fixture.defer({ responseId: "announcement", hasAudio: true }, () => {
+        fixture.switchAgent("IRS", { user_question: "Question", conversation_context: "Context" })
+    }, () => assert.fail("The acknowledgement should finish"))
+
+    direct({ type: "output_audio_buffer.stopped", response_id: "older" })
+    await Promise.resolve()
+    assert.equal(fixture.props.selectedAgentName, "greeter")
+    assert.equal(fixture.render().hook.isVoiceSwitchPending, true)
+    assert.ok(!fixture.events.includes("close direct"))
+
+    direct({ type: "output_audio_buffer.stopped", response_id: "announcement" })
+    await Promise.resolve()
+    assert.equal(fixture.props.selectedAgentName, "IRS")
+    fixture.render().configure()
+    await fixture.untilConnected()
+    assert.ok(fixture.events.indexOf("close direct") < fixture.events.indexOf("open gateway"))
+})
+
+test("a Gateway selector change waits for scheduled audio to finish", async () => {
+    const fixture = voiceTransferFixture()
+    await fixture.connect("IRS")
+    fixture.gatewayPlayback(true)
+    fixture.render().hook.selectVoiceAgent("greeter")
+    assert.equal(fixture.props.selectedAgentName, "IRS")
+    assert.equal(fixture.render().hook.isVoiceSwitchPending, true)
+    assert.ok(!fixture.events.includes("close gateway"))
+
+    fixture.gatewayPlayback(false)
+    await Promise.resolve()
+    assert.equal(fixture.props.selectedAgentName, "greeter")
+    fixture.render().configure()
+    await fixture.untilConnected()
+    assert.ok(fixture.events.includes("close gateway"))
+})
+
+test("a Gateway interruption cancels the transfer even when the SDK stops playing first", async () => {
+    const fixture = voiceTransferFixture()
+    await fixture.connect("IRS")
+    fixture.gatewayPlayback(true)
+    let cancelled = 0
+    fixture.defer({ responseId: "announcement", hasAudio: true }, () => assert.fail("Do not switch during the interruption"), () => { cancelled++ })
+
+    fixture.gatewayPlayback(false)
+    fixture.gateway({ type: "input_audio_buffer.speech_started" })
+    await Promise.resolve()
+    assert.equal(cancelled, 1)
+    assert.equal(fixture.props.selectedAgentName, "IRS")
+    assert.equal(fixture.render().hook.sessionStatus, "CONNECTED")
+    assert.ok(!fixture.events.includes("close gateway"))
+})
+
+test("a transfer without an audio acknowledgement can proceed immediately", async () => {
+    const fixture = voiceTransferFixture()
+    await fixture.connect()
+    let started = 0
+    fixture.defer({ responseId: "tool-only", hasAudio: false }, () => { started++ }, () => assert.fail("No audio to cancel"))
+    assert.equal(started, 1)
+    assert.equal(fixture.render().hook.isVoiceSwitchPending, false)
+})
+
+test("a missing WebRTC drain acknowledgement cancels the transfer and leaves the call connected", async () => {
+    const fixture = voiceTransferFixture()
+    await fixture.connect()
+    let reason
+    fixture.defer({ responseId: "missing", hasAudio: true }, () => assert.fail("Do not cut the call short"), (value) => { reason = value })
+    fixture.expire()
+    assert.ok(reason)
+    assert.equal(fixture.render().hook.isVoiceSwitchPending, false)
+    assert.equal(fixture.render().hook.sessionStatus, "CONNECTED")
+    assert.ok(!fixture.events.includes("close direct"))
+    fixture.direct({ type: "output_audio_buffer.stopped", response_id: "missing" })
+    await Promise.resolve()
+    assert.equal(fixture.props.selectedAgentName, "greeter")
 })

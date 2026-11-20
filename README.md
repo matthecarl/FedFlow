@@ -56,7 +56,7 @@ The transcript stays visible during a specialist transfer. When the voice route 
 
 1. With BioGuide selected, ask “What congressional offices did John Quincy Adams hold, and when?”
 2. Select **Draft handoff** and review the excerpt. Submit only demo material. Without a microphone, use **Try sample call** to supply a synthetic excerpt while using the same live search and model.
-3. Refresh the page while the draft is pending. The signed receipt in this browser tab identifies the same Workflow run. Open the sources in the completed draft and check the suggested next step against them.
+3. Open the sources in the completed draft and check the suggested next step against them. To test recovery, refresh while the draft is pending. The signed receipt in this browser tab restores the same Workflow run.
 
 The browser submits the approved excerpt to the handoff workflow. Vercel Workflows checkpoints the post-call retrieval and generation steps. The AI SDK uses GPT-5 mini through AI Gateway and the application resolves citations to official Biographical Directory profiles from the existing `person` index. The live audio session is separate and ends when the page reloads. Drafts require human review before being used in a research brief.
 

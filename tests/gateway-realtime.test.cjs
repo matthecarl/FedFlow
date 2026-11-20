@@ -12,10 +12,12 @@ function gatewayFixture() {
     let closes = 0
     let errors = 0
     let stops = 0
+    const playbackChanges = []
     class SdkSession {
         constructor(options) {
             sessions.push(this)
             this.options = options
+            this.state = { isPlaying: false }
         }
         async connect(options) {
             this.connectOptions = options
@@ -52,13 +54,14 @@ function gatewayFixture() {
         config: { instructions: "Use the VA index." },
         playbackEnabled: true,
         onEvent: (event) => events.push(event),
+        onPlaybackChange: (isPlaying) => playbackChanges.push(isPlaying),
         onOpen: () => { opens++ },
         onClose: () => { closes++ },
         onError: () => { errors++ },
     })
     const [session] = sessions
     return {
-        transport, session, sent, events, media: () => media, opens: () => opens, closes: () => closes, stops: () => stops, errors: () => errors,
+        transport, session, sent, events, playbackChanges, media: () => media, opens: () => opens, closes: () => closes, stops: () => stops, errors: () => errors,
         status: (status) => session.setState("status", status),
         receive: (event) => session.options.onEvent(event),
     }
@@ -88,6 +91,21 @@ test("Gateway readiness gates capture and uses the agent and model scoped token 
     assert.equal(fixture.closes(), 0)
     assert.equal(fixture.session.disposed, true)
     assert.equal(fixture.transport.readyState, "closed")
+})
+
+test("Gateway reports actual SDK playout changes while the session is open", () => {
+    const { transport, session, status, playbackChanges } = gatewayFixture()
+    status("connected")
+    session.state.isPlaying = true
+    session.setState("isPlaying", true)
+    assert.equal(transport.isAudioPlaying, true)
+    session.state.isPlaying = false
+    session.setState("isPlaying", false)
+    assert.equal(transport.isAudioPlaying, false)
+    assert.deepEqual(playbackChanges, [true, false])
+    transport.close()
+    session.setState("isPlaying", true)
+    assert.deepEqual(playbackChanges, [true, false])
 })
 
 test("Gateway normalizes caller and assistant transcript and batches completed tool calls", () => {
