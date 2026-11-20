@@ -30,6 +30,7 @@ export function useHandleServerEvent({
     selectedAgentConfigSet,
     sendClientEvent,
     setSelectedAgentName,
+    switchVoiceAgent,
 }: UseHandleServerEventParams) {
     // Access to transcript state and methods
     const {
@@ -218,12 +219,12 @@ export function useHandleServerEvent({
     const handleAgentTransfer = (args: any, callId?: string) => {
         const transferResolution = resolveTransferDestinationAgent(args)
         const destinationAgent = transferResolution.agentName
-        const handoffText = (value: unknown) => typeof value === "string" ? value.trim().slice(0, 4000) : ""
-        const conversationContext = handoffText(args.conversation_context)
+        const handoffText = (value: unknown, limit: number) => typeof value === "string" ? value.trim().slice(0, limit) : ""
+        const conversationContext = handoffText(args.conversation_context, 1000)
         const recentUserQuestion = [...transcriptItems].reverse().find(
             (item) => item.role === "user" && !item.isHidden && item.title && !/^\[(Transcribing\.\.\.|inaudible)\]$/.test(item.title),
         )?.title
-        const userQuestion = handoffText(args.user_question) || handoffText(recentUserQuestion) || conversationContext
+        const userQuestion = handoffText(args.user_question, 600) || handoffText(recentUserQuestion, 600) || conversationContext.slice(0, 600)
         console.log(`[TRANSFER] Request to transfer to agent: ${destinationAgent ?? "unresolved"}`)
 
         // Find the requested agent config
@@ -235,15 +236,6 @@ export function useHandleServerEvent({
         if (transferSuccessful) {
             console.log(`[TRANSFER] Found destination agent config: ${destinationAgent}`)
 
-            setSelectedAgentName(destinationAgent as string)
-            sendClientEvent(
-                {
-                    type: "session.update.after.transfer",
-                    agent: destinationAgent,
-                },
-                "Trigger session update after transfer",
-            )
-
             const transferResult = {
                 source_agent: selectedAgentName,
                 destination_agent: destinationAgent,
@@ -254,6 +246,14 @@ export function useHandleServerEvent({
             }
 
             addTranscriptBreadcrumb(`Transfer to ${destinationAgent}`, transferResult)
+
+            if (switchVoiceAgent?.(newAgentConfig.name, { user_question: userQuestion, conversation_context: conversationContext })) return
+
+            setSelectedAgentName(newAgentConfig.name)
+            sendClientEvent(
+                { type: "session.update.after.transfer", agent: destinationAgent },
+                "Trigger session update after transfer",
+            )
 
             sendClientEvent({
                 type: "conversation.item.create",
@@ -657,18 +657,18 @@ export function useHandleServerEvent({
         // Record detailed response data for telemetry
         if (event.response) {
             // Record enhanced response details (high-level metadata)
-            recordResponseDoneDetails(event.response)
+            const response = { ...event.response, model: (event.response as any).model ?? event.model, provider: event.provider }
+            recordResponseDoneDetails(response)
 
             // Record token usage if available
             if (event.response.usage) {
-                const modelOrVoice = (event.response as any).model ?? (event.response as any).voice
-                recordTokenUsage(event.response.usage as any, modelOrVoice)
+                recordTokenUsage(event.response.usage as any, response.model ?? response.voice, event.provider)
             }
 
             // Record the full transcript for completed responses
             // This creates a separate span with the complete transcript content
             if (event.response.status === "completed") {
-                recordFullTranscript(event.response)
+                recordFullTranscript(response)
             }
         }
 
@@ -748,6 +748,9 @@ export function useHandleServerEvent({
         const itemId = event.item?.id
 
         if (itemId) {
+            const finalText = event.item?.content?.find((part) => part.transcript || part.text)
+            const transcript = finalText?.transcript || finalText?.text
+            if (event.provider && transcript) updateTranscriptMessage(itemId, transcript, false)
             updateTranscriptItemStatus(itemId, "DONE")
         }
     }
@@ -776,7 +779,7 @@ export function useHandleServerEvent({
                 // Add common labels to the transaction
                 transaction.addLabels({
                     "gen_ai.event.type": event.type,
-                    "gen_ai.system": "openai",
+                    "gen_ai.system": event.provider ?? "openai",
                     "gen_ai.operation.name": "realtime",
                 })
 
@@ -806,7 +809,8 @@ export function useHandleServerEvent({
                     statusDetails: event.response?.status_details,
                     responseStatus: event.response?.status,
                     conversationId: (event.response as any)?.conversation_id,
-                    model: (event.response as any)?.model,
+                    model: event.model ?? (event.response as any)?.model,
+                    provider: event.provider,
                     // For transcription events, add transcript length info
                     transcriptLength: event.transcript ? event.transcript.length : undefined,
                     hasTranscript: !!event.transcript,

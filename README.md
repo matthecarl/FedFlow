@@ -1,6 +1,6 @@
 # FedFlow — voice support and cited handoffs
 
-A Next.js application for voice and typed conversations through OpenAI Realtime, grounded in an existing Elasticsearch knowledge base. After a BioGuide research conversation, a reviewer approves a transcript excerpt and requests a durable draft handoff with official congressional sources and a proposed next step.
+A Next.js application for voice and typed conversations through direct OpenAI Realtime and Vercel AI Gateway, grounded in an existing Elasticsearch knowledge base. After a BioGuide research conversation, a reviewer approves a transcript excerpt and requests a durable draft handoff with official congressional sources and a proposed next step.
 
 ![Screenshot of the Realtime API Agents Demo](public/screenshot.png)
 
@@ -21,25 +21,36 @@ The active demo uses:
 | `DEMO_PASSWORD_ENABLED` | Optional; protected by default. Set exactly `false` to temporarily disable the password gate |
 | `DEMO_PASSWORD` | Random password of at least 16 characters when protection is enabled; login username is `demo` |
 | `OPENAI_API_KEY` | Server-side OpenAI key with Realtime access and available quota |
-| `OPENAI_REALTIME_MODEL` | Optional; defaults to `gpt-realtime-2.1-mini` |
+| `OPENAI_REALTIME_MODEL` | Optional for direct OpenAI Realtime. Defaults to `gpt-realtime-2.1-mini` |
 | `ELASTICSEARCH_CAPSTONE_URL` | Elasticsearch HTTPS endpoint |
 | `ELASTICSEARCH_CAPSTONE_API_KEY` | Encoded API key permitted to read the required indices and use their inference services |
 | `HANDOFF_RECEIPT_SECRET` | Random secret of at least 32 characters for signing handoff receipts. Configure it separately in Preview and local development |
-| `AI_GATEWAY_API_KEY` | For local handoff generation when Vercel OIDC is unavailable. The linked Vercel project uses OIDC |
+| `AI_GATEWAY_REALTIME_API_KEY` | Server-side Gateway key for the four specialist voice routes. Store it in the intended Preview environment |
+| `AI_GATEWAY_API_KEY` | Local fallback for Gateway voice and handoff generation. The deployed handoff uses Vercel OIDC |
 
 ```sh
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000), sign in as `demo` with your `DEMO_PASSWORD`, then select **Connect** and allow microphone access. BioGuide is the default specialist. If the browser blocks audio autoplay, select **Enable audio**. Microphone access requires localhost or HTTPS. **Try sample call** opens the handoff form without starting a voice session.
+Open [http://localhost:3000](http://localhost:3000), sign in as `demo` with your `DEMO_PASSWORD`, then select **Connect** and allow microphone access. The Greeter opens by default. Choose a specialist from **Agent** or ask the Greeter to transfer you. If the browser blocks audio autoplay, select **Enable audio**. Microphone access requires localhost or HTTPS. **Try sample call** opens the handoff form without starting a voice session.
 
-Typed messages use the same OpenAI Realtime session as voice and currently require a working microphone. Denied/unavailable microphone access, or a connection timeout while waiting for the microphone, opens a recovery dialog. Allow access in browser/site and device settings, then use **Refresh and try again** or **I've enabled my microphone — reconnect**. Refreshing alone does not clear a saved permission denial. Use **Try sample call** to exercise the handoff without a microphone.
+Typed messages use the active voice session and currently require a working microphone. Denied/unavailable microphone access, or a connection timeout while waiting for the microphone, opens a recovery dialog. Allow access in browser/site and device settings, then use **Refresh and try again** or **I've enabled my microphone — reconnect**. Refreshing alone does not clear a saved permission denial. Use **Try sample call** to exercise the handoff without a microphone.
 
 HTTP Basic authentication is on by default. The handoff API always requires the demo login. The framework-generated Workflow queue callback has its own authentication, so the Next.js proxy leaves that route to Workflow. User-facing API responses are private and uncached. Browsers remember Basic credentials. Use a private window for reviewer testing and close it after the demo. Rotating the password requires a new deployment. Older deployments retain their configuration and access settings.
 
-The server mints a short-lived token with `/v1/realtime/client_secrets`; the browser exchanges its SDP offer at `/v1/realtime/calls`. The standard OpenAI key stays on the server. Replacing a key alone does not migrate applications using the retired beta session API.
+## Voice models
 
-Specialist handoffs retain the Realtime conversation and explicitly pass `user_question` and `conversation_context` in the transfer tool result. The outgoing agent announces an obvious transfer without asking for routing approval. The receiving specialist introduces itself, summarizes the question, and asks for confirmation before retrieving an answer. Its introductory response disables tool calls for that turn only. After confirmation or correction, it searches using the resolved question and context. Generated wording can vary.
+| Agent | Model | Voice connection |
+| --- | --- | --- |
+| Greeter | `gpt-realtime-2.1-mini` | Direct OpenAI WebRTC |
+| IRS | `elevenlabs/eleven-realtime-v1-max` | AI Gateway WebSocket |
+| VA | `google/gemini-3.8-live` | AI Gateway WebSocket |
+| Medicare | `spacexai/grok-voice-3.0` | AI Gateway WebSocket |
+| BioGuide | `openai/gpt-realtime-2.1` | AI Gateway WebSocket |
+
+The server selects the model and issues a short-lived session credential. The browser connects to the selected service with that credential. Push-to-talk uses the direct OpenAI path. Gateway specialists detect when the speaker finishes. The Elastic specialist also uses the direct OpenAI path.
+
+The transcript stays visible during a specialist transfer. When the voice route changes, FedFlow starts a new session with the caller’s question and relevant conversation context. The outgoing agent announces an obvious transfer without asking for routing approval. The receiving specialist introduces itself, summarizes the question, and asks for confirmation before retrieving an answer. Its introductory response disables tool calls for that turn only. After confirmation or correction, it searches using the resolved question and context. Generated wording can vary.
 
 ## Assessment walkthrough
 
@@ -56,7 +67,7 @@ See [assessment notes](docs/assessment.md) for architecture, evaluation, rollout
 | Feature | Where it is used |
 | --- | --- |
 | AI SDK | Structured handoff generation and model usage data in `src/app/workflows/support-handoff.ts` |
-| AI Gateway | The handoff model call to `openai/gpt-5-mini`; the live OpenAI Realtime connection has a separate path and bill |
+| AI Gateway | Live WebSocket sessions for IRS, VA, Medicare, and BioGuide, plus the `openai/gpt-5-mini` handoff draft |
 | Workflows | Checkpointed retrieval and generation, bounded retries, and recovery of the same handoff run after a tab refresh |
 | Vercel Functions | Next.js server routes for short-lived Realtime credentials, external Elasticsearch retrieval, and starting or reading handoff runs |
 | Preview Deployments | Commit-specific review and validation before production promotion |
@@ -107,8 +118,8 @@ This checks the homepage, creates one short-lived Realtime token without printin
 
 Before recording:
 
-1. Open the app, select **Connect**, and confirm the status becomes **Connected** and the greeting appears and plays.
-2. Ask the BioGuide question above. Confirm retrieval returns the correct member, an official congressional profile link, and a spoken answer.
+1. Open the app, confirm the Greeter is selected, and select **Connect**. Check for **Live conversation**.
+2. Select BioGuide and ask the question above. Confirm retrieval returns the correct member, an official congressional profile link, and a spoken answer.
 3. Type a follow-up and confirm the transcript and audio complete.
 4. Ask to switch to VA or another agent, then ask a relevant question. Check the answer and source links.
 5. Interrupt an answer; exercise push-to-talk and audio playback controls.
@@ -129,7 +140,7 @@ Build and test a preview before promoting it. Verify the project, deployment URL
 
 Agent prompts, tool schemas, and tool implementations live in [`src/app/agentConfigs`](src/app/agentConfigs). Start with [`bioguideAgent.ts`](src/app/agentConfigs/semanticSearch/bioguideAgent.ts). Retrieval routes live under `src/app/api`; the shared search implementation is [`utility.ts`](src/app/api/utility.ts).
 
-The conversation flow is browser ↔ OpenAI Realtime, with tool calls executed by the browser through a Next.js retrieval route to Elasticsearch. The handoff flow is approved excerpt → Next.js route → Workflow → Elasticsearch retrieval → AI Gateway generation → reviewed draft.
+The browser connects to OpenAI Realtime or AI Gateway using a short-lived credential. Tool calls run through the matching Next.js retrieval route to Elasticsearch. The handoff flow is approved excerpt → Next.js route → Workflow → Elasticsearch retrieval → AI Gateway generation → reviewed draft.
 
 ## Core contributors
 

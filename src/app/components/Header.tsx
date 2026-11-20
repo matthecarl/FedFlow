@@ -6,9 +6,10 @@ interface HeaderProps {
     selectedAgentName: string
     selectedAgentConfigSet: AgentConfig[] | null
     onAgentChange: (e: React.ChangeEvent<HTMLSelectElement>) => void
+    agentSelectionDisabled: boolean
 }
 
-export function Header({ selectedAgentName, selectedAgentConfigSet, onAgentChange }: HeaderProps) {
+export function Header({ selectedAgentName, selectedAgentConfigSet, onAgentChange, agentSelectionDisabled }: HeaderProps) {
     return (
         <header className="app-header">
             <div className="app-container header-inner">
@@ -23,7 +24,7 @@ export function Header({ selectedAgentName, selectedAgentConfigSet, onAgentChang
                 {selectedAgentConfigSet && (
                     <div className="header-controls">
                         <label htmlFor="agent-select" className="control-label">Agent</label>
-                        <select id="agent-select" value={selectedAgentName} onChange={onAgentChange} className="select">
+                        <select id="agent-select" value={selectedAgentName} onChange={onAgentChange} disabled={agentSelectionDisabled} className="select">
                             {selectedAgentConfigSet.map((agent) => <option key={agent.name} value={agent.name}>{agent.name === "greeter" ? "Greeter" : agent.name}</option>)}
                         </select>
                     </div>

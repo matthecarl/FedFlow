@@ -4,6 +4,10 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 const load = require("./helpers/load-typescript.cjs")
 const responseCoordinator = load("src/app/lib/realtimeResponseCoordinator.ts")
+const voiceDependencies = {
+    "@/app/lib/voice-routes": load("src/app/lib/voice-routes.ts"),
+    "./gatewayRealtimeTransport": {},
+}
 const next = { NextResponse: { json: (body, options) => Response.json(body, options) } }
 const tracing = {
     context: { active() {}, with: (_context, fn) => fn() },
@@ -232,6 +236,7 @@ test("connection timeout leaves Connecting even while microphone permission rema
             },
             uuid: { v4: () => "test" },
             "@/app/lib/realtimeResponseCoordinator": responseCoordinator,
+            ...voiceDependencies,
             "@/app/lib/realtimeConnection": {
                 createRealtimeConnection: async (_key, _audio, _model, signal, _message, _stream, onStage) => {
                     connectionSignal = signal
@@ -277,6 +282,7 @@ test("response.done metadata reaches telemetry endpoint without transcript captu
             "next/server": next,
             "@/app/lib/telemetry-safety": load("src/app/lib/telemetry-safety.ts"),
             "@/app/lib/semconv": semconv,
+            "@/app/lib/voice-routes": load("src/app/lib/voice-routes.ts"),
             perf_hooks: require("node:perf_hooks"),
             "@opentelemetry/api": {
                 ...tracing,
@@ -326,6 +332,7 @@ for (const failure of [
                 },
                 uuid: { v4: () => 'test' },
                 '@/app/lib/realtimeResponseCoordinator': responseCoordinator,
+                ...voiceDependencies,
                 '@/app/lib/realtimeConnection': {
                     createRealtimeConnection: async (_key, _audio, _model, _signal, _message, _stream, onStage) => {
                         onStage(failure.stage); throw failure.error
@@ -370,6 +377,7 @@ test("typed input waits for greeting cancellation acknowledgement before creatin
             },
             uuid: { v4: () => "test" },
             "@/app/lib/realtimeResponseCoordinator": responseCoordinator,
+            ...voiceDependencies,
             "@/app/lib/realtimeConnection": { createRealtimeConnection: async (...args) => { receive = data => args[4]({ data: JSON.stringify(data) }); return ({
                 pc: { addEventListener() {}, getSenders: () => [], close() {} }, dc,
                 localStream: { getTracks: () => [] },
@@ -423,6 +431,7 @@ function automaticConnectionFixture({ fail = false, agents = [{ name: "greeter" 
             },
             uuid: { v4: () => "test" },
             "@/app/lib/realtimeResponseCoordinator": responseCoordinator,
+            ...voiceDependencies,
             "@/app/lib/realtimeConnection": { createRealtimeConnection: () => new Promise(() => {}) },
             "@/app/contexts/TranscriptContext": { useTranscript: () => ({ addTranscriptBreadcrumb() {} }) },
             "@/app/contexts/EventContext": { useEvent: () => ({ logClientEvent() {}, logServerEvent() {} }) },
@@ -507,4 +516,116 @@ test("failed automatic connection does not loop and explicit retry remains avail
     assert.equal(fixture.requests(), 1)
     current.hook.onToggleConnection()
     assert.equal(fixture.requests(), 2)
+})
+
+test("cross-provider handoff releases the old call before opening one microphone and carries the question once", async () => {
+    const events = []
+    const directMessages = []
+    const gatewayMessages = []
+    const breadcrumbs = []
+    const refs = [], states = [], effects = []
+    const props = {
+        selectedAgentName: "greeter",
+        selectedAgentConfigSet: [{ name: "greeter", instructions: "Greet." }, { name: "IRS", instructions: "Use IRS sources." }],
+        setSelectedAgentName: (name) => { props.selectedAgentName = name },
+        autoConnect: false,
+    }
+    let refIndex = 0, stateIndex = 0, switchAgent
+    const directTrack = { stop: () => { events.push("stop direct microphone") } }
+    const gatewayTrack = { stop: () => { events.push("stop gateway microphone") } }
+    const directStream = { getTracks: () => [directTrack], getAudioTracks: () => [directTrack] }
+    const gatewayStream = { getTracks: () => [gatewayTrack], getAudioTracks: () => [gatewayTrack] }
+    const api = load("src/app/hooks/useRealtimeConnection.ts", {
+        dependencies: {
+            react: {
+                useRef: (current) => refs[refIndex++] ||= { current },
+                useEffect: (effect) => { effects.push(effect) },
+                useState: (initial) => {
+                    const index = stateIndex++
+                    if (!(index in states)) states[index] = initial
+                    return [states[index], (value) => { states[index] = value }]
+                },
+            },
+            uuid: { v4: () => "test" },
+            "@/app/lib/realtimeResponseCoordinator": responseCoordinator,
+            ...voiceDependencies,
+            "./gatewayRealtimeTransport": {
+                GatewayRealtimeTransport: class {
+                    constructor(options) {
+                        assert.equal(options.config.turnDetection.type, "semantic-vad")
+                        assert.equal(options.agent, "IRS")
+                        this.options = options
+                    }
+                    async connect(stream) {
+                        assert.equal(stream, gatewayStream)
+                        this.readyState = "open"
+                        events.push("open gateway")
+                        this.options.onOpen()
+                    }
+                    send(event) { gatewayMessages.push(event) }
+                    startCapture() { events.push("start gateway capture") }
+                    close() { events.push("close gateway") }
+                },
+            },
+            "@/app/lib/realtimeConnection": { createRealtimeConnection: async () => ({
+                pc: { addEventListener() {}, getSenders: () => [{ track: directTrack }], close() { events.push("close direct") } },
+                dc: {
+                    readyState: "open",
+                    addEventListener() {},
+                    removeEventListener() {},
+                    send(data) { directMessages.push(JSON.parse(data)) },
+                    close() {},
+                },
+                localStream: directStream,
+            }) },
+            "@/app/contexts/TranscriptContext": {
+                useTranscript: () => ({ addTranscriptBreadcrumb: (...args) => breadcrumbs.push(args), addTranscriptMessage() {} }),
+            },
+            "@/app/contexts/EventContext": { useEvent: () => ({ logClientEvent() {}, logServerEvent() {} }) },
+            "./useHandleServerEvent": { useHandleServerEvent(params) { switchAgent = params.switchVoiceAgent; return { current() {} } } },
+            "../lib/client-telemetry": { recordServerEvent() {} },
+        },
+        globals: {
+            window: {}, AbortController, DOMException,
+            document: { createElement: () => ({ pause() {} }) },
+            fetch: async () => Response.json({ value: "test", model: "direct-test" }),
+            navigator: { mediaDevices: {
+                async getUserMedia() {
+                    assert.ok(events.includes("close direct"))
+                    assert.ok(events.includes("stop direct microphone"))
+                    events.push("open gateway microphone")
+                    return gatewayStream
+                },
+            } },
+            setTimeout: () => 1, clearTimeout() {},
+        },
+    })
+    const render = () => {
+        refIndex = 0
+        stateIndex = 0
+        effects.length = 0
+        const hook = api.useRealtimeConnection(props)
+        return { hook, configure: effects.at(-1) }
+    }
+    render().hook.onToggleConnection()
+    for (let i = 0; i < 30 && render().hook.sessionStatus !== "CONNECTED"; i++) await Promise.resolve()
+    assert.equal(render().hook.sessionStatus, "CONNECTED")
+    render().configure()
+
+    const context = { user_question: "How do I request a tax transcript?", conversation_context: "Caller needs the official process." }
+    assert.equal(switchAgent("IRS", context), true)
+    assert.equal(render().hook.canSend, false)
+    render().configure()
+    for (let i = 0; i < 30 && render().hook.sessionStatus !== "CONNECTED"; i++) await Promise.resolve()
+    assert.equal(render().hook.sessionStatus, "CONNECTED")
+    render().configure()
+    assert.equal(render().hook.supportsPushToTalk, false)
+    assert.equal(gatewayMessages.filter((event) => event.type === "response.create").length, 1)
+    assert.equal(gatewayMessages[0].item.content[0].text, `FedFlow handoff: ${JSON.stringify(context)}`)
+    assert.equal(breadcrumbs.at(-1)[0], "Agent: IRS")
+    assert.ok(events.indexOf("close direct") < events.indexOf("open gateway"))
+    assert.ok(directMessages.every((event) => JSON.stringify(event).includes(context.user_question) === false))
+    render().hook.onToggleConnection()
+    assert.ok(events.includes("close gateway"))
+    assert.ok(events.includes("stop gateway microphone"))
 })

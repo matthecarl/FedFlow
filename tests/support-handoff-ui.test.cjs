@@ -38,3 +38,12 @@ test("a long specialist answer preserves the caller's question inside the backen
     assert.ok(draft.transcript.startsWith(`Caller: ${researchQuestion}`))
     assert.equal(draftFromTranscript([bioGuideStart, message("user", "[inaudible]")]), null)
 })
+
+test("a confirmed call transfer preserves the carried BioGuide question in the draft", () => {
+    const transfer = { ...bioGuideStart, data: { user_question: researchQuestion } }
+    const introduction = message("assistant", "I understand you’re asking about John Quincy Adams’s congressional service. Is that correct?")
+    assert.equal(draftFromTranscript([transfer, introduction]), null)
+    const draft = draftFromTranscript([transfer, introduction, message("user", "Yes, that's right.")])
+    assert.equal(draft.question, researchQuestion)
+    assert.ok(draft.transcript.startsWith(`Caller: ${researchQuestion}`))
+})

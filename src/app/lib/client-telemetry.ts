@@ -94,13 +94,14 @@ function mirrorRumTransaction(name: string, type: string, labels: Record<string,
     transaction.end()
 }
 
-export async function recordTokenUsage(usageData: TokenUsage, model?: string) {
+export async function recordTokenUsage(usageData: TokenUsage, model?: string, provider?: string) {
     try {
         const eventData: Record<string, unknown> = {
             totalTokens: usageData.total_tokens,
             inputTokens: usageData.input_tokens,
             outputTokens: usageData.output_tokens,
             model: model || "unknown",
+            provider,
             input_token_details: usageData.input_token_details,
             output_token_details: usageData.output_token_details,
         }
@@ -108,7 +109,7 @@ export async function recordTokenUsage(usageData: TokenUsage, model?: string) {
         await postTelemetry("token_usage", eventData)
 
         mirrorRumTransaction("gen_ai.token_usage", "metrics", {
-            [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
+            [semconv.ATTR_GEN_AI_SYSTEM]: provider?.toLowerCase() ?? "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
             [semconv.ATTR_GEN_AI_TOTAL_TOKENS]: usageData.total_tokens,
             [semconv.ATTR_GEN_AI_USAGE_INPUT_TOKENS]: usageData.input_tokens,
@@ -133,6 +134,7 @@ export async function recordResponseDoneDetails(responseData: any) {
             responseStatus: responseData?.status,
             conversationId: responseData?.conversation_id,
             model: responseData?.model,
+            provider: responseData?.provider,
             voice: responseData?.voice,
             outputAudioFormat: responseData?.output_audio_format,
             temperature: responseData?.temperature,
@@ -152,7 +154,7 @@ export async function recordResponseDoneDetails(responseData: any) {
         await postTelemetry("response_details", eventData)
 
         mirrorRumTransaction("gen_ai.response_details", "app", {
-            [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
+            [semconv.ATTR_GEN_AI_SYSTEM]: responseData?.provider?.toLowerCase() ?? "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
             [semconv.ATTR_GEN_AI_RESPONSE_ID]: responseData?.id || "unknown",
             [semconv.ATTR_GEN_AI_RESPONSE_STATUS]: responseData?.status || "unknown",
@@ -243,12 +245,13 @@ export async function recordServerEvent(eventType: string, eventData: any) {
             sessionId: eventData?.sessionId || eventData?.session_id,
             conversationId: eventData?.conversationId || eventData?.conversation_id,
             model: eventData?.model,
+            provider: eventData?.provider,
         }
 
         await postTelemetry(eventType, normalizedEventData)
 
         mirrorRumTransaction("gen_ai.server_event", "app", {
-            [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
+            [semconv.ATTR_GEN_AI_SYSTEM]: eventData?.provider?.toLowerCase() ?? "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
             [semconv.ATTR_GEN_AI_EVENT_TYPE]: eventType,
             ...(normalizedEventData.responseId ? { [semconv.ATTR_GEN_AI_RESPONSE_ID]: String(normalizedEventData.responseId) } : {}),
@@ -276,6 +279,8 @@ export async function recordFullTranscript(responseData: any) {
             outputItemId: output?.id,
             status: responseData?.status,
             conversationId: responseData?.conversation_id,
+            model: responseData?.model,
+            provider: responseData?.provider,
             transcript,
             transcriptSource: "assistant",
             role: "assistant",
@@ -285,7 +290,7 @@ export async function recordFullTranscript(responseData: any) {
         await postTelemetry("full_transcript", eventData)
 
         mirrorRumTransaction("gen_ai.full_transcript", "app", {
-            [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
+            [semconv.ATTR_GEN_AI_SYSTEM]: responseData?.provider?.toLowerCase() ?? "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
             [semconv.ATTR_GEN_AI_RESPONSE_ID]: responseData?.id || "unknown",
             [semconv.ATTR_GEN_AI_TRANSCRIPT_LENGTH]: transcript.length,
@@ -308,6 +313,8 @@ export async function recordUserTranscript(event: any) {
             eventId: event?.event_id,
             itemId: event?.item_id,
             contentIndex: event?.content_index,
+            model: event?.model,
+            provider: event?.provider,
             transcript,
             timestamp: Date.now(),
             role: "user",
@@ -317,7 +324,7 @@ export async function recordUserTranscript(event: any) {
         await postTelemetry("user_transcript", eventData)
 
         mirrorRumTransaction("gen_ai.user_transcript", "app", {
-            [semconv.ATTR_GEN_AI_SYSTEM]: "openai",
+            [semconv.ATTR_GEN_AI_SYSTEM]: event?.provider?.toLowerCase() ?? "openai",
             [semconv.ATTR_GEN_AI_OPERATION_NAME]: "realtime",
             [semconv.ATTR_GEN_AI_EVENT_ID]: event?.event_id || "unknown",
             [semconv.ATTR_GEN_AI_ITEM_ID]: event?.item_id || "unknown",

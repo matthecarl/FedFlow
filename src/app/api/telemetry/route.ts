@@ -1,4 +1,5 @@
 import { sanitizeTelemetry } from "@/app/lib/telemetry-safety"
+import { VOICE_ROUTES } from "@/app/lib/voice-routes"
 import { NextRequest, NextResponse } from "next/server"
 import {
     trace,
@@ -74,6 +75,23 @@ function debug(...args: any[]) {
 // Sampling configuration (process a percentage of events)
 const SAMPLING_RATE = parseFloat(process.env.TELEMETRY_SAMPLING_RATE || "1.0") // Default to 100%
 
+const voiceProviders = new Map<string, string>(
+    Object.values(VOICE_ROUTES).map(({ model, provider }) => [model, provider.toLowerCase()]),
+)
+const directModel = process.env.OPENAI_REALTIME_MODEL || VOICE_ROUTES.greeter.model
+if (!voiceProviders.has(directModel)) voiceProviders.set(directModel, "openai")
+
+function voiceAttributes(eventData: Record<string, unknown>): Attributes {
+    // Caller data is untrusted. Use the configured model registry for both
+    // provider and model labels, even if the caller supplies a provider label.
+    const model = typeof eventData.model === "string" ? eventData.model : ""
+    const provider = voiceProviders.get(model)
+    return {
+        [ATTR_GEN_AI_SYSTEM]: provider ?? "openai",
+        ...(provider && { [ATTR_GEN_AI_RESPONSE_MODEL]: model }),
+    }
+}
+
 // Get a tracer instance
 const tracer = trace.getTracer("gen_ai-realtime-server")
 
@@ -141,7 +159,7 @@ function enrichEventDataFromResponse(eventData: Record<string, any>): void {
     eventData.responseId = response.id
     eventData.responseStatus = response.status
     eventData.conversationId = response.conversation_id
-    eventData.model = response.model
+    eventData.model ??= response.model
     eventData.voice = response.voice
     eventData.outputAudioFormat = response.output_audio_format
     eventData.temperature = response.temperature
@@ -200,7 +218,6 @@ function processTokenUsage(span: Span, eventData: Record<string, any>): void {
     setAttributeIfExists(span, ATTR_GEN_AI_TOTAL_TOKENS, eventData.totalTokens)
     setAttributeIfExists(span, ATTR_GEN_AI_USAGE_INPUT_TOKENS, eventData.inputTokens)
     setAttributeIfExists(span, ATTR_GEN_AI_USAGE_OUTPUT_TOKENS, eventData.outputTokens)
-    setAttributeIfExists(span, ATTR_GEN_AI_RESPONSE_MODEL, eventData.model)
 
     // Process input token details if available
     if (eventData.inputTokenDetails || eventData.input_token_details) {
@@ -249,12 +266,8 @@ function processTokenUsage(span: Span, eventData: Record<string, any>): void {
 
     // Record token usage metrics
     const commonAttrs: Attributes = {
+        ...voiceAttributes(eventData),
         [ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-        [ATTR_GEN_AI_SYSTEM]: "openai",
-    }
-
-    if (eventData.model) {
-        commonAttrs[ATTR_GEN_AI_RESPONSE_MODEL] = eventData.model
     }
 
     // Record input tokens
@@ -397,6 +410,7 @@ function processCustomAttributes(span: Span, attributes: Record<string, any>): v
     if (!attributes) return
 
     for (const [key, value] of Object.entries(attributes)) {
+        if (key === ATTR_GEN_AI_SYSTEM || key === ATTR_GEN_AI_RESPONSE_MODEL || key === "gen_ai.provider.name") continue
         setAttributeIfExists(span, key, value)
     }
 }
@@ -475,7 +489,6 @@ class BatchTelemetryProcessor {
                 kind: SpanKind.SERVER,
                 attributes: {
                     [ATTR_GEN_AI_OPERATION_NAME]: "realtime_batch",
-                    [ATTR_GEN_AI_SYSTEM]: "openai",
                     "batch.size": this.events.length,
                 },
             },
@@ -495,7 +508,6 @@ class BatchTelemetryProcessor {
         const durationSec = (performance.now() - this.startTime) / 1000
         genAiOperationDuration.record(durationSec, {
             [ATTR_GEN_AI_OPERATION_NAME]: "realtime_batch",
-            [ATTR_GEN_AI_SYSTEM]: "openai",
             "batch.size": this.events.length,
         })
 
@@ -516,8 +528,8 @@ class BatchTelemetryProcessor {
 
         // Common attributes for all spans
         const commonAttrs: Attributes = {
+            ...voiceAttributes(eventData),
             [ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-            [ATTR_GEN_AI_SYSTEM]: "openai",
             "telemetry.source": "client",
             "batch.processing": true,
         }
@@ -550,10 +562,9 @@ class BatchTelemetryProcessor {
         // Record operation duration metric
         const durationSec = (performance.now() - eventStartTime) / 1000
         genAiOperationDuration.record(durationSec, {
+            ...voiceAttributes(eventData),
             [ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-            [ATTR_GEN_AI_SYSTEM]: "openai",
             event_type: eventType,
-            ...(eventData.model ? { [ATTR_GEN_AI_RESPONSE_MODEL]: eventData.model } : {}),
         })
 
         // End the span
@@ -766,8 +777,8 @@ export async function POST(req: NextRequest) {
 
             // Common attributes for all spans
             const commonAttrs: Attributes = {
+                ...voiceAttributes(eventData),
                 [ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-                [ATTR_GEN_AI_SYSTEM]: "openai",
                 "telemetry.source": "client",
             }
 
@@ -798,10 +809,9 @@ export async function POST(req: NextRequest) {
             // Record operation duration metric
             const durationSec = (performance.now() - startTime) / 1000
             genAiOperationDuration.record(durationSec, {
+                ...voiceAttributes(eventData),
                 [ATTR_GEN_AI_OPERATION_NAME]: "realtime",
-                [ATTR_GEN_AI_SYSTEM]: "openai",
                 event_type: eventType,
-                ...(eventData.model ? { [ATTR_GEN_AI_RESPONSE_MODEL]: eventData.model } : {}),
             })
 
             // End the span

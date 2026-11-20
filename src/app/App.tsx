@@ -74,6 +74,7 @@ function Logic() {
         retryAudioPlayback,
         localStream,
         remoteStream,
+        supportsPushToTalk,
         isPTTActive,
         setIsPTTActive,
         isPTTUserSpeaking,
@@ -99,6 +100,7 @@ function Logic() {
                 selectedAgentName={selectedAgentName}
                 selectedAgentConfigSet={selectedAgentConfigSet}
                 onAgentChange={handleSelectedAgentChange}
+                agentSelectionDisabled={sessionStatus === "CONNECTING"}
             />
 
             {microphoneRequired && !handoff.open && (
@@ -147,6 +149,7 @@ function Logic() {
             <BottomToolbar
                 sessionStatus={sessionStatus}
                 onToggleConnection={onToggleConnection}
+                supportsPushToTalk={supportsPushToTalk}
                 isPTTActive={isPTTActive}
                 setIsPTTActive={setIsPTTActive}
                 isPTTUserSpeaking={isPTTUserSpeaking}

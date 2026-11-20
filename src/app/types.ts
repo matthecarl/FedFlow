@@ -70,6 +70,8 @@ export interface FunctionCallParams {
 
 export interface ServerEvent {
     type: string
+    provider?: string
+    model?: string
     event_id?: string
     item_id?: string
     transcript?: string
@@ -137,7 +139,10 @@ export interface UseHandleServerEventParams {
     selectedAgentConfigSet: AgentConfig[] | null
     sendClientEvent: (eventObj: any, eventNameSuffix?: string) => void
     setSelectedAgentName: (name: string) => void
+    switchVoiceAgent?: (name: string, context: VoiceHandoffContext) => boolean
 }
+
+export type VoiceHandoffContext = { user_question: string; conversation_context: string }
 
 export interface TokenUsage {
     total_tokens: number

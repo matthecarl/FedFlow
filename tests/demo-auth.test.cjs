@@ -112,6 +112,17 @@ test("handoffs require demo access when the general password gate is disabled", 
     }
 })
 
+test("Gateway token minting requires demo access and blocks cross-origin requests even when the general gate is disabled", () => {
+    const { proxy } = gate({ DEMO_PASSWORD: password, DEMO_PASSWORD_ENABLED: "false" })
+    const path = "/api/session/gateway?agent=IRS"
+    assert.equal(proxy(request(path, {}, "POST")).status, 401)
+    assert.equal(proxy(request(path, { authorization: authorization(), origin: "https://other.example" }, "POST")).status, 403)
+    const allowed = proxy(request(path, { authorization: authorization(), origin: "https://demo.example" }, "POST"))
+    assert.equal(allowed.headers.get("x-middleware-next"), "1")
+    assert.equal(allowed.headers.get("x-middleware-request-authorization"), null)
+    assertPrivate(allowed)
+})
+
 test("disabled password gate strips cached Authorization credentials before handlers", () => {
     const response = gate({ DEMO_PASSWORD_ENABLED: "false" }).proxy(request("/api/session", { authorization: authorization(), "x-request-id": "disabled-gate-check" }, "POST"))
     assert.equal(response.headers.get("x-middleware-next"), "1")

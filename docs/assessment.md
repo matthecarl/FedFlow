@@ -13,7 +13,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   Browser[Reviewer browser]
-  Voice[OpenAI Realtime]
+  Voice[OpenAI Realtime or AI Gateway]
   DraftModel[OpenAI: GPT-5 mini]
   Elastic[External Elasticsearch: congressional biographies]
   subgraph Vercel
@@ -21,7 +21,7 @@ flowchart LR
     Work[Workflow: search then draft]
     Gateway[AI Gateway]
   end
-  Browser <-->|WebRTC audio| Voice
+  Browser <-->|WebRTC or WebSocket audio| Voice
   Browser <-->|reviewed excerpt and draft| App
   App -->|voice search tool| Elastic
   App -->|start or recover run| Work
@@ -30,14 +30,14 @@ flowchart LR
   Gateway -->|model request| DraftModel
 ```
 
-Vercel connects the research workflow to an existing knowledge platform. Elasticsearch retains the index, ingestion, relevance configuration, and search permissions. The demo reads `person` through `profileText_semantic` over authenticated HTTPS. Voice and typed conversation use a short-lived browser credential and a direct OpenAI Realtime connection. Vercel receives the explicitly approved text excerpt for the handoff. These are separate failure paths.
+Vercel connects the research workflow to an existing knowledge platform. Elasticsearch retains the index, ingestion, relevance configuration, and search permissions. The demo reads `person` through `profileText_semantic` over authenticated HTTPS. Voice and typed conversation use a short-lived browser credential for the agent’s realtime model. Vercel receives the explicitly approved text excerpt for the handoff. These are separate failure paths.
 
 | Vercel choice | Role and trade-off |
 | --- | --- |
 | AI SDK | Validates the structured draft and gives the app usage data. The server resolves citation IDs against retrieved sources; human review checks whether the recommendation is supported. |
-| AI Gateway | Routes the draft call to `openai/gpt-5-mini` and exposes model usage. Its costs cover the draft model call; OpenAI Realtime is billed separately. |
+| AI Gateway | Routes specialist conversations to four distinct realtime models and draft generation to `openai/gpt-5-mini`. Gateway usage covers the routed sessions and drafts. |
 | Workflows | Checkpoints retrieval and generation so the draft can continue when a tab reloads. It introduces state retention and retry semantics that matter in production. |
-| Vercel Functions | Runs the Next.js API routes for credential issuance, external retrieval, and starting or reading handoff runs. Long-lived audio travels directly between the browser and OpenAI. |
+| Vercel Functions | Runs the Next.js API routes for credential issuance, external retrieval, and starting or reading handoff runs. Long-lived audio travels between the browser and its selected voice service. |
 | Preview Deployments | Pin review to a commit and validate both providers and Elastic before promotion. Build readiness alone does not validate upstream credentials. |
 
 Development agents use Vercel Board for task coordination and review evidence. AI SDK, AI Gateway, and Workflows meet the AI-stack requirement.
@@ -45,7 +45,7 @@ Development agents use Vercel Board for task coordination and review evidence. A
 ## Reviewer walkthrough
 
 1. Open the commit-specific preview from the deck and sign in as `demo` with the supplied test password. If the deployment is protected, use the private link shared from Vercel.
-2. Select **Connect**, grant microphone access, and ask “What congressional offices did John Quincy Adams hold, and when?” Inspect the retrieved evidence, then select **Draft handoff**. **Try sample call** uses a synthetic excerpt and the same live dependencies without a microphone.
+2. Select BioGuide, choose **Connect**, grant microphone access, and ask “What congressional offices did John Quincy Adams hold, and when?” Inspect the retrieved evidence, then select **Draft handoff**. **Try sample call** uses a synthetic excerpt and the same live dependencies without a microphone.
 3. Review the excerpt and select **Generate handoff**. Refresh after submitting, then open the recovered draft and follow its citations. The live audio session is separate from the recovered draft.
 
 The public repository is [FedFlow](https://github.com/matthecarl/FedFlow/tree/codex/vercel-sa-demo). Keep the commit, preview URL, and actual run evidence together in the deck. Supply test credentials privately.

@@ -49,12 +49,19 @@ export function draftFromTranscript(items: TranscriptItem[]): HandoffDraft | nul
     if (caller === -1) return null
 
     // Bound turns separately so a long specialist reply cannot displace the caller's question.
+    const callerText = turns[caller].text
+    const handoffQuestion = items[lastAgentStart].data?.user_question
+    const confirmedTransfer = typeof handoffQuestion === "string" && handoffQuestion.trim() &&
+        !turns.slice(0, caller).some((turn) => turn.role === "user") &&
+        /^(?:yes|yeah|correct|that['’]s (?:right|correct))(?:[, ]+(?:please|that['’]s (?:right|correct)))?[.!]?$/i.test(callerText)
+    const question = confirmedTransfer ? handoffQuestion : callerText
     const excerpt = turns.slice(Math.max(0, caller - 3), caller + 3).map(({ role, text }) => {
         const clipped = text.length > 650 ? `${text.slice(0, 649)}…` : text
         return `${role === "user" ? "Caller" : "Specialist"}: ${clipped}`
     })
+    if (confirmedTransfer) excerpt.unshift(`Caller: ${question.slice(0, HANDOFF_QUESTION_LIMIT)}`)
     return {
-        question: turns[caller].text.slice(0, HANDOFF_QUESTION_LIMIT),
+        question: question.slice(0, HANDOFF_QUESTION_LIMIT),
         transcript: excerpt.join("\n\n").slice(0, HANDOFF_TRANSCRIPT_LIMIT),
     }
 }

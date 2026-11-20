@@ -4,6 +4,7 @@ import { SessionStatus } from "@/app/types"
 interface BottomToolbarProps {
     sessionStatus: SessionStatus
     onToggleConnection: () => void
+    supportsPushToTalk: boolean
     isPTTActive: boolean
     setIsPTTActive: (val: boolean) => void
     isPTTUserSpeaking: boolean
@@ -51,6 +52,7 @@ function Switch({
 function BottomToolbar({
     sessionStatus,
     onToggleConnection,
+    supportsPushToTalk,
     isPTTActive,
     setIsPTTActive,
     isPTTUserSpeaking,
@@ -64,7 +66,7 @@ function BottomToolbar({
     const isConnected = sessionStatus === "CONNECTED"
     const isConnecting = sessionStatus === "CONNECTING"
 
-    const connectionLabel = isConnected ? "Disconnect" : isConnecting ? "Connecting..." : "Connect"
+    const connectionLabel = isConnected ? "Disconnect" : isConnecting ? "Cancel connection" : "Connect"
     const connectionClasses = isConnected ? "btn btn-danger" : isConnecting ? "btn btn-neutral" : "btn btn-primary"
     const talkLabel = isPTTUserSpeaking ? "Listening..." : "Hold to talk"
 
@@ -76,21 +78,20 @@ function BottomToolbar({
                         <button
                             onClick={onToggleConnection}
                             className={connectionClasses}
-                            disabled={isConnecting}
                         >
                             {connectionLabel}
                         </button>
-                        <span className="toolbar-hint">{isConnected ? "Microphone connected" : isConnecting ? "Allow microphone access" : "Microphone off"}</span>
+                        <span className="toolbar-hint">{isConnected ? "Microphone connected" : isConnecting ? "Opening voice connection" : "Microphone off"}</span>
                     </div>
 
                     <div className="toolbar-options">
-                        <Switch
+                        {supportsPushToTalk && <Switch
                             id="push-to-talk"
                             label="Push to talk"
                             checked={isPTTActive}
                             onChange={setIsPTTActive}
                             disabled={!isConnected}
-                        />
+                        />}
                         {isPTTActive && <button
                             onPointerDown={(event) => {
                                 event.currentTarget.setPointerCapture(event.pointerId)

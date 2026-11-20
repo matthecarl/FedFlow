@@ -4,6 +4,7 @@ import Events from "./Events"
 import AudioDancerComponent from "./AudioDancerComponent"
 import { SessionStatus } from "@/app/types"
 import { SUPPORT_AGENT, supportPrompts } from "@/app/hooks/useSupportHandoff"
+import { getVoiceRoute } from "@/app/lib/voice-routes"
 
 interface MainProps {
     userText: string
@@ -38,8 +39,9 @@ export function Main({
     onViewHandoff,
     onSampleCall,
 }: MainProps) {
-    const sessionLabel = sessionStatus === "CONNECTED" ? "Live conversation" : sessionStatus === "CONNECTING" ? "Connecting your microphone…" : "Session paused"
+    const sessionLabel = sessionStatus === "CONNECTED" ? "Live conversation" : sessionStatus === "CONNECTING" ? "Connecting voice…" : "Session paused"
     const statusDot = sessionStatus === "CONNECTED" ? "bg-emerald-500" : sessionStatus === "CONNECTING" ? "bg-amber-500" : "bg-slate-300"
+    const route = getVoiceRoute(selectedAgentName)
 
     return (
         <main className="workspace app-container">
@@ -50,6 +52,7 @@ export function Main({
                         {sessionLabel}
                     </span>
                     <span className="agent-badge">{!selectedAgentName || selectedAgentName === "greeter" ? "Your guide" : `${selectedAgentName} specialist`}</span>
+                    {route && <span className="text-sm text-slate-600">{route.provider} · {route.label}</span>}
                 </div>
                 <div className="handoff-actions" role="group" aria-label="Support handoff actions">
                     <div className="session-visual" aria-hidden="true">

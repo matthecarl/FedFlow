@@ -1,13 +1,13 @@
 # FedFlow architecture
 
-FedFlow connects a Next.js research interface on Vercel to an existing Elasticsearch knowledge base. Voice and typed conversation use OpenAI Realtime. A separate, reviewer-approved handoff uses Vercel AI SDK, AI Gateway, and Workflows.
+FedFlow connects a Next.js research interface on Vercel to an existing Elasticsearch knowledge base. The Greeter uses direct OpenAI Realtime. Four specialists use distinct AI Gateway realtime models. A separate, reviewer-approved handoff uses Vercel AI SDK, AI Gateway, and Workflows.
 
 ## Conversation and retrieval
 
 ```mermaid
 flowchart LR
   Browser[Browser: voice and typed messages]
-  Realtime[OpenAI Realtime]
+  Realtime[OpenAI Realtime or AI Gateway]
   Elastic[External Elasticsearch]
   subgraph Vercel
     Session[Function: short-lived credential]
@@ -16,14 +16,14 @@ flowchart LR
   Browser -->|request credential| Session
   Session -->|server-side authentication| Realtime
   Session -->|short-lived credential| Browser
-  Browser <-->|WebRTC media and data| Realtime
+  Browser <-->|WebRTC or WebSocket| Realtime
   Browser -->|execute retrieval tool call| Search
   Search <-->|authenticated HTTPS search| Elastic
   Search -->|passages and source URLs| Browser
   Browser -->|tool result| Realtime
 ```
 
-The standard OpenAI and Elasticsearch API keys remain server-side. The browser uses a short-lived OpenAI credential. Typed messages share the Realtime connection and currently require the same microphone permission as voice. The browser executes retrieval tool calls through the server; OpenAI does not connect directly to Elasticsearch.
+The OpenAI, Gateway, and Elasticsearch API keys remain server-side. The browser receives a short-lived credential for its selected voice route and sends retrieval tool calls through the Next.js search API. A model change starts a new voice session. FedFlow retains the transcript and supplies the receiving specialist with the transfer question and context.
 
 The assessment uses the existing congressional `person` index and its `profileText_semantic` field. The other specialist routes read their configured indices on the same external service. The app does not crawl source sites, populate indices, or replace Elasticsearch ingestion and relevance management.
 
@@ -58,13 +58,13 @@ The server accepts only citation IDs from the retrieved evidence and returns val
 | Feature | Responsibility |
 | --- | --- |
 | AI SDK | Structured generation and usage metadata for the handoff |
-| AI Gateway | Model routing for the handoff's `openai/gpt-5-mini` call |
+| AI Gateway | Realtime sessions for IRS, VA, Medicare, and BioGuide, plus the handoff’s `openai/gpt-5-mini` call |
 | Workflows | Persistent handoff run and step execution |
 | Vercel Functions | Next.js credential, retrieval, and handoff API routes |
 | Preview Deployments | Commit-specific verification before promotion |
 | Vercel Board — development only | Private task coordination and review evidence for coding agents |
 
-OpenAI Realtime media and conversation inference are outside the Gateway handoff path. Elasticsearch remains the knowledge source. Board belongs to the development process. A separate OpenTelemetry path exports preview conversation spans to the configured Elastic APM destination.
+The Greeter connects directly to OpenAI. The other voice routes and the durable handoff use independent Gateway requests. Elasticsearch remains the knowledge source. Board belongs to the development process. A separate OpenTelemetry path exports preview conversation spans to the configured Elastic APM destination.
 
 ## Access, failures, and validation
 

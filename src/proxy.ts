@@ -17,9 +17,11 @@ function matches(actual: string, expected: string): boolean {
 }
 
 export function proxy(request: NextRequest) {
-    // Require a demo login for handoff generation even when the rest of the app is public.
+    // Require a demo login on paid handoffs and Gateway token issuance even
+    // when the rest of the app is public.
     const isHandoff = request.nextUrl.pathname.startsWith("/api/support/")
-    if (isHandoff || process.env.DEMO_PASSWORD_ENABLED !== "false") {
+    const isGatewayMint = /^\/api\/session\/gateway\/?$/.test(request.nextUrl.pathname)
+    if (isHandoff || isGatewayMint || process.env.DEMO_PASSWORD_ENABLED !== "false") {
         const password = process.env.DEMO_PASSWORD
         if (!password || password.trim().length < 16) {
             return new NextResponse("Demo access is not configured.", {
