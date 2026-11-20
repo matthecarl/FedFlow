@@ -1,12 +1,12 @@
 # Realtime API Agents RAG Demo
 
-A Next.js and TypeScript voice application that combines OpenAI Realtime with Elasticsearch retrieval and agent handoffs. Agents answer questions using indexed Elastic Search Labs, VA, Medicare, IRS, and congressional biography content. Agent Builder text chat and observability are optional integrations.
+A Next.js voice application that combines OpenAI Realtime with Elasticsearch retrieval. The FedFlow assessment adds a durable support handoff: a reviewer selects an excerpt from an Elastic support call, then gets a draft with sources and a proposed next step. Agent Builder text chat and observability are optional integrations.
 
 ![Screenshot of the Realtime API Agents Demo](public/screenshot.png)
 
 ## Local setup
 
-Use Node.js 20.9 or newer and npm. Install the locked dependencies:
+Use Node.js 22 or newer and npm. Install the locked dependencies:
 
 ```sh
 npm ci
@@ -24,20 +24,32 @@ The voice and retrieval demo requires:
 | `OPENAI_REALTIME_MODEL` | Optional; defaults to `gpt-realtime-2.1-mini` |
 | `ELASTICSEARCH_CAPSTONE_URL` | Elasticsearch HTTPS endpoint |
 | `ELASTICSEARCH_CAPSTONE_API_KEY` | Encoded API key permitted to read the five indices and use their inference services |
+| `HANDOFF_RECEIPT_SECRET` | Random secret of at least 32 characters for signing handoff receipts. Configure it separately in Preview and local development |
+| `AI_GATEWAY_API_KEY` | For local handoff generation when Vercel OIDC is unavailable. The linked Vercel project uses OIDC |
 
 ```sh
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000), sign in with username `demo` and your `DEMO_PASSWORD` if protection is enabled, allow microphone access when prompted. Realtime voice connects automatically once the selected agent is ready. Disconnect stops the session and does not automatically reconnect; select **Connect** to resume. A failed connection waits for an explicit retry. If the browser blocks audio autoplay, select **Enable audio**. The browser must use localhost or HTTPS for microphone access.
+Open [http://localhost:3000](http://localhost:3000), sign in as `demo` with your `DEMO_PASSWORD`, then select **Connect** and allow microphone access. Elastic is the default specialist. If the browser blocks audio autoplay, select **Enable audio**. Microphone access requires localhost or HTTPS. **Try sample call** opens the handoff form without starting a voice session.
 
 Realtime voice requires a working microphone even for typed messages. Denied/unavailable microphone access, or a connection timeout while waiting for the microphone, opens a blocking recovery dialog. Allow access in browser/site and device settings, then use **Refresh and try again** and accept the prompt when the app reconnects. Alternatively, **I've enabled my microphone — reconnect** retries without reloading. Refreshing alone does not clear a saved permission denial. Network failures retain the normal connection error instead of this dialog.
 
-By default, every page and API route is protected by HTTP Basic authentication in `src/proxy.ts`. Missing or short passwords return 503 rather than exposing the app. Set `DEMO_PASSWORD_ENABLED=false` and redeploy to temporarily disable the gate during troubleshooting; no password is required while disabled. Cross-origin API blocking, private/no-store caching headers, and removal of cached Authorization credentials from downstream requests remain active. Remove the flag or set it to `true` and redeploy to restore protection. Keep the password server-side and use HTTPS outside localhost. Browsers remember Basic credentials; use a private browser window and close it after the demo. Rotate `DEMO_PASSWORD` and redeploy to change access. Older deployments keep their original configuration and need separate Vercel protection or removal. This shared password is for controlled demos, not individual user accounts.
+HTTP Basic authentication is on by default. The handoff API always requires the demo login. The framework-generated Workflow queue callback has its own authentication, so the Next.js proxy leaves that route to Workflow. User-facing API responses are private and uncached. Browsers remember Basic credentials. Use a private window for reviewer testing and close it after the demo. Rotating the password requires a new deployment. Older deployments retain their configuration and access settings.
 
 The server mints a short-lived token with `/v1/realtime/client_secrets`; the browser exchanges its SDP offer at `/v1/realtime/calls`. The standard OpenAI key stays on the server. Replacing a key alone does not migrate applications using the retired beta session API.
 
 Specialist handoffs retain the Realtime conversation and explicitly pass `user_question` and `conversation_context` in the transfer tool result. The outgoing agent announces an obvious transfer without asking for routing approval. The receiving specialist introduces itself, summarizes the question, and asks for confirmation before retrieving an answer. Its introductory response disables tool calls for that turn only. After confirmation or correction, it searches using the resolved question and context. Generated wording can vary.
+
+## Assessment walkthrough
+
+1. With the Elastic specialist selected, ask “How can I combine keyword and semantic search in Elasticsearch using reciprocal rank fusion?” or “What is ELSER, and when should I use it for semantic search?”
+2. Select **Draft handoff** and review the excerpt. Submit only demo material. Without a microphone, use **Try sample call** to supply a synthetic excerpt while using the same live search and model.
+3. Refresh the page while the draft is pending. The signed receipt in this browser tab identifies the same Workflow run. Open the sources in the completed draft and check the suggested next step against them.
+
+The browser sends only the excerpt you approve. Vercel Workflows checkpoints the post-call retrieval and generation steps. The AI SDK uses GPT-5 mini through AI Gateway and the application resolves citations against the existing Search Labs index. The live audio session is separate and ends when the page reloads. Drafts require human review before being used in support.
+
+See [assessment notes](docs/assessment.md) for architecture, evaluation, rollout, and the reviewer script.
 
 ## Data sources
 
