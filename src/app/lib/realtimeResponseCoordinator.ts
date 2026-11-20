@@ -3,7 +3,7 @@ type ResponseRequest = { event: RealtimeEvent; label: string }
 
 /** One owner for default-conversation inference, including VAD and tool continuations. */
 export class RealtimeResponseCoordinator {
-    private active: { id: string | null; eventId?: string } | null = null
+    private active: { id: string | null; eventId?: string; supersededByVoice?: boolean } | null = null
     private pending: ResponseRequest | null = null
     private cancelRequested = false
     private cancelSent = false
@@ -13,6 +13,7 @@ export class RealtimeResponseCoordinator {
     constructor(
         private send: (event: RealtimeEvent, label: string) => void,
         private createEventId: () => string,
+        private canRespond = () => true,
     ) {}
 
     request(event: RealtimeEvent, label = "") {
@@ -30,9 +31,10 @@ export class RealtimeResponseCoordinator {
         }
     }
 
-    beginInput() {
+    beginInput(interruptPlayback = true) {
         this.inputPending = true
-        this.interrupt()
+        if (interruptPlayback) this.interrupt()
+        else if (this.active) this.active.supersededByVoice = true
     }
 
     discardInput() {
@@ -42,11 +44,12 @@ export class RealtimeResponseCoordinator {
 
     receive(event: RealtimeEvent) {
         if (event.type === "response.created") {
-            this.active = { id: event.response.id, eventId: this.active?.eventId }
+            this.active = { ...this.active, id: event.response.id }
             this.cancelWhenIdentified()
         } else if (event.type === "response.done") {
             // An old completion must never unlock a newer/in-flight request.
             if (!this.active?.id || event.response.id !== this.active.id) return
+            const supersededByVoice = this.active.supersededByVoice
             this.active = null
             this.cancelRequested = false
             this.cancelSent = false
@@ -55,6 +58,7 @@ export class RealtimeResponseCoordinator {
                     if (item.type === "function_call" && item.call_id && item.name && item.arguments) this.toolCalls.add(item.call_id)
                 }
             }
+            return supersededByVoice
         } else if (event.type === "input_audio_buffer.committed") {
             this.inputPending = false
             // Both server VAD and push-to-talk wait for the committed input.
@@ -78,7 +82,7 @@ export class RealtimeResponseCoordinator {
     }
 
     flush() {
-        if (!this.pending || this.active || this.inputPending || this.toolCalls.size) return
+        if (!this.pending || this.active || this.inputPending || this.toolCalls.size || !this.canRespond()) return
         const request = this.pending
         this.pending = null
         this.active = { id: null, eventId: request.event.event_id }

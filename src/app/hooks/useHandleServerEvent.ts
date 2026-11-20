@@ -714,7 +714,9 @@ export function useHandleServerEvent({
                     output: JSON.stringify({ did_transfer: false, reason }),
                 },
             }, "cancel deferred agent transfer")
-            if (deferAgentTransfer) {
+            if (event.responseSupersededByVoice) {
+                cancel("The caller began a new turn during the outgoing reply.")
+            } else if (deferAgentTransfer) {
                 const hasAudio = event.response.output.some((item) =>
                     item.content?.some((part) => part.type === "output_audio" || part.type === "audio"),
                 )

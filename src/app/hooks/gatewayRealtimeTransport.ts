@@ -10,6 +10,12 @@ import {
 type WireEvent = { type: string; [key: string]: any }
 type FunctionCall = { type: "function_call"; call_id: string; name: string; arguments: string }
 type AssistantMessage = { type: "message"; role: "assistant"; id: string; content: [{ type: "output_audio"; transcript: string }] }
+type InputAudio = Extract<Experimental_RealtimeClientEvent, { type: "input-audio-append" }>
+
+const MAX_HELD_AUDIO_FRAMES = 448
+const MAX_HELD_AUDIO_BYTES = 1_250_000
+const AUDIO_REPLAY_INTERVAL_MS = 16
+const RESPONSE_START_WINDOW_MS = 8_000
 
 function normalizeUsage(usage?: Experimental_RealtimeUsage) {
     if (!usage) return undefined
@@ -72,6 +78,10 @@ export class GatewayRealtimeTransport {
     }>()
     private toolNames = new Map<string, string>()
     private stream: MediaStream | null = null
+    private heldAudio: InputAudio[] = []
+    private heldAudioBytes = 0
+    private replayingAudio: InputAudio | null = null
+    private responseStartDeadline = 0
 
     constructor(private options: GatewayTransportOptions) {
         this.playbackEnabled = options.playbackEnabled
@@ -83,7 +93,10 @@ export class GatewayRealtimeTransport {
                 provider: gatewayModel.provider,
                 capabilities: gatewayModel.capabilities,
                 getWebSocketConfig: gatewayModel.getWebSocketConfig?.bind(gatewayModel),
-                serializeClientEvent: gatewayModel.serializeClientEvent.bind(gatewayModel),
+                serializeClientEvent: (event, options) => {
+                    if (event.type === "input-audio-append" && !this.shouldSendAudio(event)) return null
+                    return gatewayModel.serializeClientEvent(event, options)
+                },
                 buildSessionConfig: gatewayModel.buildSessionConfig.bind(gatewayModel),
                 parseServerEvent: (raw) => {
                     const event = gatewayModel.parseServerEvent(raw)
@@ -105,17 +118,75 @@ export class GatewayRealtimeTransport {
                 this.readyState = "open"
                 options.onOpen()
             } else if (status === "error") {
+                this.clearHeldAudio()
                 options.onError()
             } else if (status === "disconnected") {
+                this.clearHeldAudio()
                 options.onClose()
             }
         }, (isPlaying) => {
-            if (this.readyState === "open") options.onPlaybackChange?.(isPlaying)
+            if (this.readyState !== "open") return
+            options.onPlaybackChange?.(isPlaying)
+            if (!isPlaying) void this.replayAudio()
         })
     }
 
     get isAudioPlaying() {
         return this.session.isAudioPlaying
+    }
+
+    private get shouldHoldAudio() {
+        return this.isAudioPlaying || Date.now() < this.responseStartDeadline ||
+            (this.activeResponse !== null && !this.interruptedResponses.has(this.activeResponse))
+    }
+
+    private shouldSendAudio(event: InputAudio) {
+        if (this.readyState !== "open") return false
+        if (event === this.replayingAudio) {
+            // Generation may resume while this frame is waiting in the SDK codec queue.
+            if (this.shouldHoldAudio || this.heldAudio[0] !== event) return false
+            this.heldAudio.shift()
+            this.heldAudioBytes -= event.audio.length
+            return true
+        }
+        if (!this.shouldHoldAudio && !this.heldAudio.length && !this.replayingAudio) return true
+
+        // Keep the most recent continuous input when a long reply fills the buffer.
+        // Gateway audio is base64, so its character count is its encoded byte count.
+        if (event.audio.length <= MAX_HELD_AUDIO_BYTES) {
+            while (this.heldAudio.length >= MAX_HELD_AUDIO_FRAMES || this.heldAudioBytes + event.audio.length > MAX_HELD_AUDIO_BYTES) {
+                this.heldAudioBytes -= this.heldAudio.shift()!.audio.length
+            }
+            this.heldAudio.push(event)
+            this.heldAudioBytes += event.audio.length
+        }
+        void this.replayAudio()
+        return false
+    }
+
+    private async replayAudio() {
+        if (this.replayingAudio) return
+        try {
+            while (this.readyState === "open" && !this.shouldHoldAudio && this.heldAudio.length) {
+                const frame = this.heldAudio[0]
+                this.replayingAudio = frame
+                await this.session.sendEvent(frame)
+                if (this.heldAudio[0] === frame) break
+                // Let the browser drain its WebSocket send buffer between frames.
+                if (this.heldAudio.length) await new Promise((resolve) => setTimeout(resolve, AUDIO_REPLAY_INTERVAL_MS))
+            }
+        } catch {
+            this.clearHeldAudio()
+            if (this.readyState === "open") this.options.onError()
+        } finally {
+            this.replayingAudio = null
+        }
+    }
+
+    private clearHeldAudio() {
+        this.heldAudio = []
+        this.heldAudioBytes = 0
+        this.responseStartDeadline = 0
     }
 
     async connect(stream: MediaStream) {
@@ -152,12 +223,14 @@ export class GatewayRealtimeTransport {
                 break
             }
             case "response.create":
+                this.responseStartDeadline = Date.now() + RESPONSE_START_WINDOW_MS
                 command = {
                     type: "response-create",
                     options: event.response?.instructions ? { instructions: event.response.instructions } : undefined,
                 }
                 break
             case "response.cancel":
+                this.clearHeldAudio()
                 command = { type: "response-cancel" }
                 break
             default:
@@ -175,12 +248,18 @@ export class GatewayRealtimeTransport {
     }
 
     stopPlayback() {
+        this.clearHeldAudio()
+        this.stopAssistantOutput()
+    }
+
+    private stopAssistantOutput() {
         if (this.activeResponse) this.interruptedResponses.add(this.activeResponse)
         this.session.stopPlayback()
     }
 
     close() {
         this.readyState = "closed"
+        this.clearHeldAudio()
         this.session.dispose()
         this.stream = null
         this.responses.clear()
@@ -206,6 +285,7 @@ export class GatewayRealtimeTransport {
         if ("responseId" in event && event.responseId && event.type !== "delegation-created") {
             if (this.completedResponses.has(event.responseId)) return
             if (!this.responses.has(event.responseId)) {
+                this.responseStartDeadline = 0
                 this.getResponse(event.responseId)
                 this.activeResponse = event.responseId
                 emit({ type: "response.created", response: { id: event.responseId } })
@@ -216,7 +296,8 @@ export class GatewayRealtimeTransport {
                 emit({ type: "session.created", session: { id: event.sessionId } })
                 break
             case "speech-started":
-                this.stopPlayback()
+                // Speech detection can acknowledge the leading frames of a replay.
+                this.stopAssistantOutput()
                 emit({ type: "input_audio_buffer.speech_started" })
                 break
             case "input-transcription-completed":
@@ -270,11 +351,14 @@ export class GatewayRealtimeTransport {
                     },
                 })
                 for (const id of response?.calls.keys() ?? []) if (status !== "completed") this.toolNames.delete(id)
+                void this.replayAudio()
                 break
             }
             case "error":
+                this.responseStartDeadline = 0
                 emit({ type: "error", error: { code: event.code, message: "The voice provider returned an error." } })
                 if (this.readyState === "connecting") this.options.onError()
+                else void this.replayAudio()
                 break
         }
     }

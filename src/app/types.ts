@@ -72,6 +72,7 @@ export interface ServerEvent {
     type: string
     provider?: string
     model?: string
+    responseSupersededByVoice?: boolean
     event_id?: string
     item_id?: string
     transcript?: string

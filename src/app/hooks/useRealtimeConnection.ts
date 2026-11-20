@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from "react"
 import { v4 as uuidv4 } from "uuid"
-import { SessionStatus, UseRealtimeConnectionProps, VoiceHandoffContext } from "@/app/types"
+import { ServerEvent, SessionStatus, UseRealtimeConnectionProps, VoiceHandoffContext } from "@/app/types"
 import { createRealtimeConnection, RealtimeConnectionStage } from "@/app/lib/realtimeConnection"
 import { useTranscript } from "@/app/contexts/TranscriptContext"
 import { useEvent } from "@/app/contexts/EventContext"
@@ -42,6 +42,7 @@ export function useRealtimeConnection({
     const directPlaybackRef = useRef({
         active: new Set<string>(),
         ended: new Map<string, "stopped" | "cleared">(),
+        deadlines: new Map<string, ReturnType<typeof setTimeout>>(),
     })
     const pendingSwitchRef = useRef<DeferredVoiceSwitch | null>(null)
     const [isVoiceSwitchPending, setIsVoiceSwitchPending] = useState(false)
@@ -87,7 +88,9 @@ export function useRealtimeConnection({
     const { addTranscriptMessage, addTranscriptBreadcrumb } = useTranscript()
     const { logClientEvent, logServerEvent } = useEvent()
     if (!responseCoordinatorRef.current) {
-        responseCoordinatorRef.current = new RealtimeResponseCoordinator(sendWireEvent, uuidv4)
+        responseCoordinatorRef.current = new RealtimeResponseCoordinator(
+            sendWireEvent, uuidv4, () => directPlaybackRef.current.active.size === 0,
+        )
     }
 
     // Set up the server event handler
@@ -170,10 +173,42 @@ export function useRealtimeConnection({
 
     function rememberDirectPlaybackEnd(responseId: string, end: "stopped" | "cleared") {
         if (!responseId) return
-        const ended = directPlaybackRef.current.ended
+        const { ended, deadlines } = directPlaybackRef.current
+        const deadline = deadlines.get(responseId)
+        if (deadline !== undefined) {
+            clearTimeout(deadline)
+            deadlines.delete(responseId)
+        }
         if (ended.has(responseId)) return
         ended.set(responseId, end)
         if (ended.size > 32) ended.delete(ended.keys().next().value!)
+    }
+
+    function trackCompletedDirectReply(response?: ServerEvent["response"]) {
+        const responseId = response?.id
+        if (response?.status !== "completed" || !responseId) return
+        const direct = directPlaybackRef.current
+        if (direct.ended.has(responseId) || direct.deadlines.has(responseId)) return
+        const hasAudio = response.output?.some((item) =>
+            item.content?.some((part) => part.type === "output_audio" || part.type === "audio"),
+        )
+        if (!hasAudio && !direct.active.has(responseId)) return
+        // Generation can complete before the first WebRTC playback-start event.
+        direct.active.add(responseId)
+        direct.deadlines.set(responseId, setTimeout(() => {
+            direct.active.delete(responseId)
+            rememberDirectPlaybackEnd(responseId, "cleared")
+            logClientEvent({ type: "audio.drain_timeout", responseId })
+            responseCoordinatorRef.current?.flush()
+        }, VOICE_DRAIN_TIMEOUT_MS))
+    }
+
+    function resetDirectPlayback() {
+        const { active, ended, deadlines } = directPlaybackRef.current
+        deadlines.forEach((deadline) => clearTimeout(deadline))
+        deadlines.clear()
+        active.clear()
+        ended.clear()
     }
 
     // Function to send events to the client
@@ -287,13 +322,15 @@ export function useRealtimeConnection({
             if (controller.signal.aborted) return
             try {
                 if (message.type === "input_audio_buffer.speech_started") {
-                    if (route?.transport === "gateway") cancelPendingVoiceSwitch(CALLER_INTERRUPTED)
-                    else {
-                        responseCoordinatorRef.current?.beginInput()
-                        cancelAssistantSpeech()
-                    }
+                    cancelPendingVoiceSwitch(CALLER_INTERRUPTED)
+                    // Speech onset has no words yet. Keep listening without
+                    // dropping the assistant audio to guess the caller's intent.
+                    if (route?.transport !== "gateway") responseCoordinatorRef.current?.beginInput(false)
                 }
-                responseCoordinatorRef.current?.receive(message)
+                if (message.type === "response.done" && route?.transport !== "gateway") {
+                    trackCompletedDirectReply(message.response)
+                }
+                const responseSupersededByVoice = responseCoordinatorRef.current?.receive(message)
                 const direct = directPlaybackRef.current
                 const audioId = typeof message.response_id === "string" ? message.response_id : ""
                 if (message.type === "output_audio_buffer.started") {
@@ -308,7 +345,9 @@ export function useRealtimeConnection({
                         finishVoiceSwitchIfDrained()
                     }
                 }
-                handleServerEventRef.current({ ...message, provider: route?.provider ?? "OpenAI", model: modelRef.current })
+                handleServerEventRef.current({
+                    ...message, provider: route?.provider ?? "OpenAI", model: modelRef.current, responseSupersededByVoice,
+                })
                 if (message.type === "error" && message.error?.code === "conversation_already_has_active_response") {
                     // A rejected create has no response ID to await.
                     setConnectionError("Voice replies overlapped. Select Connect to start a fresh session.")
@@ -449,8 +488,7 @@ export function useRealtimeConnection({
         initializedAgentRef.current = null
         configuredPTTRef.current = null
         responseCoordinatorRef.current?.reset()
-        directPlaybackRef.current.active.clear()
-        directPlaybackRef.current.ended.clear()
+        resetDirectPlayback()
         try {
             // Clean up event listeners from data channel
             if (dcRef.current && dcEventHandlersRef.current) {
@@ -754,6 +792,7 @@ export function useRealtimeConnection({
     useEffect(() => () => {
         if (pendingSwitchRef.current) clearTimeout(pendingSwitchRef.current.timer)
         pendingSwitchRef.current = null
+        resetDirectPlayback()
         handleServerEventRef.current({ type: "session.disconnected" })
         responseCoordinatorRef.current?.reset()
         const pending = connectionAbortRef.current

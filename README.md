@@ -48,7 +48,7 @@ HTTP Basic authentication is on by default. The handoff API always requires the 
 | Medicare | `spacexai/grok-voice-3.0` | AI Gateway WebSocket |
 | BioGuide | `openai/gpt-realtime-2.1` | AI Gateway WebSocket |
 
-The server selects the model and issues a short-lived session credential. The browser connects to the selected service with that credential. Push-to-talk uses the direct OpenAI path. Gateway specialists detect when the speaker finishes. The Elastic specialist also uses the direct OpenAI path.
+The server selects the model and issues a short-lived session credential. The browser connects to the selected service with that credential. In hands-free mode, you can ask for a transfer while the agent is speaking. FedFlow keeps the request and processes it after the reply finishes. The direct OpenAI routes, including Elastic, also offer push-to-talk for interrupting a reply.
 
 The transcript stays visible during a specialist transfer. When the voice route changes, FedFlow starts a new session with the caller’s question and relevant conversation context. The outgoing agent announces an obvious transfer without asking for routing approval. The receiving specialist introduces itself, summarizes the question, and asks for confirmation before retrieving an answer. Its introductory response disables tool calls for that turn only. After confirmation or correction, it searches using the resolved question and context. Generated wording can vary.
 
@@ -122,7 +122,7 @@ Before recording:
 2. Select BioGuide and ask the question above. Confirm retrieval returns the correct member, an official congressional profile link, and a spoken answer.
 3. Type a follow-up and confirm the transcript and audio complete.
 4. Ask to switch to VA or another agent, then ask a relevant question. Check the answer and source links.
-5. Interrupt an answer; exercise push-to-talk and audio playback controls.
+5. Ask for a transfer during an audible hands-free reply and confirm that the reply finishes. On a direct OpenAI route, check that push-to-talk can interrupt playback.
 6. Disconnect and reconnect. Confirm microphone capture stops after disconnect and no repeated automatic retries occur on errors.
 7. Use **Try sample call**, generate a handoff, refresh while pending, and verify the recovered result and its citations.
 

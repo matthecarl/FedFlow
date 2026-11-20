@@ -1,6 +1,7 @@
 /* global require */
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const { setImmediate: waitForReplay } = require("node:timers/promises")
 const load = require("./helpers/load-typescript.cjs")
 
 function gatewayFixture() {
@@ -24,7 +25,8 @@ function gatewayFixture() {
         }
         startAudioCapture(stream) { media = stream }
         sendEvent(event) {
-            sent.push(event)
+            const serialized = this.options.model.serializeClientEvent(event)
+            if (serialized != null) sent.push(serialized)
             return Promise.resolve()
         }
         stopPlayback() { stops++ }
@@ -32,6 +34,7 @@ function gatewayFixture() {
         dispose() { this.disposed = true }
     }
     const { GatewayRealtimeTransport } = load("src/app/hooks/gatewayRealtimeTransport.ts", {
+        globals: { setTimeout: (callback) => Promise.resolve().then(callback) },
         dependencies: {
             ai: {
                 Experimental_AbstractRealtimeSession: SdkSession,
@@ -64,6 +67,11 @@ function gatewayFixture() {
         transport, session, sent, events, playbackChanges, media: () => media, opens: () => opens, closes: () => closes, stops: () => stops, errors: () => errors,
         status: (status) => session.setState("status", status),
         receive: (event) => session.options.onEvent(event),
+        capture: (audio) => session.sendEvent({ type: "input-audio-append", audio }),
+        playback: (isPlaying) => {
+            session.state.isPlaying = isPlaying
+            session.setState("isPlaying", isPlaying)
+        },
     }
 }
 
@@ -165,4 +173,91 @@ test("Gateway identifies a Gemini turn even when no response-created arrived", (
         ["response.created", "first"], ["response.done", "first"],
         ["response.created", "second"], ["response.done", "second"],
     ])
+})
+
+const audioFrames = (events) => events.filter(({ type }) => type === "input-audio-append").map(({ audio }) => audio)
+
+test("Gateway retains hands-free audio from response request through playback and replays it in order", async () => {
+    const { transport, sent, events, status, receive, capture, playback } = gatewayFixture()
+    status("connected")
+    capture("before-reply")
+    transport.send({ type: "response.create" })
+    capture("request-to-start")
+    receive({ type: "response-created", responseId: "answer" })
+    capture("generating")
+    playback(true)
+    receive({ type: "response-done", responseId: "answer", status: "completed" })
+    capture("audible-tail")
+    assert.deepEqual(sent.map(({ type }) => type), ["input-audio-append", "response-create"])
+
+    playback(false)
+    // A provider may detect speech before the rest of the captured turn is sent.
+    receive({ type: "speech-started" })
+    capture("live-input-during-replay")
+    await waitForReplay()
+    assert.deepEqual(audioFrames(sent), ["before-reply", "request-to-start", "generating", "audible-tail", "live-input-during-replay"])
+
+    receive({ type: "input-transcription-completed", itemId: "overlap", transcript: "Transfer me to the IRS specialist." })
+    assert.equal(events.at(-1).type, "conversation.item.input_audio_transcription.completed")
+    assert.equal(events.at(-1).transcript, "Transfer me to the IRS specialist.")
+})
+
+test("Gateway pauses microphone replay when another response starts and resumes after its completion", async () => {
+    const { sent, status, receive, capture, playback } = gatewayFixture()
+    status("connected")
+    receive({ type: "response-created", responseId: "first" })
+    playback(true)
+    capture("overlap-start")
+    capture("overlap-end")
+    playback(false)
+    await waitForReplay()
+    assert.deepEqual(audioFrames(sent), [])
+
+    receive({ type: "response-done", responseId: "first", status: "completed" })
+    receive({ type: "response-created", responseId: "second" })
+    capture("second-overlap")
+    await waitForReplay()
+    assert.deepEqual(audioFrames(sent), ["overlap-start"])
+
+    receive({ type: "response-done", responseId: "second", status: "completed" })
+    await waitForReplay()
+    assert.deepEqual(audioFrames(sent), ["overlap-start", "overlap-end", "second-overlap"])
+})
+
+test("Gateway discards held audio on explicit interruption or disconnect", async () => {
+    const { transport, sent, status, receive, capture, playback } = gatewayFixture()
+    status("connected")
+    receive({ type: "response-created", responseId: "interrupted" })
+    capture("discard-on-interrupt")
+    transport.stopPlayback()
+    receive({ type: "response-done", responseId: "interrupted", status: "cancelled" })
+    capture("fresh-input")
+    await waitForReplay()
+    assert.deepEqual(audioFrames(sent), ["fresh-input"])
+
+    playback(true)
+    capture("discard-on-close")
+    transport.close()
+    playback(false)
+    capture("retired-capture")
+    await waitForReplay()
+    assert.deepEqual(audioFrames(sent), ["fresh-input"])
+})
+
+test("Gateway bounds the number and byte size of retained audio frames", async () => {
+    const { sent, status, capture, playback } = gatewayFixture()
+    status("connected")
+    playback(true)
+    for (let i = 0; i < 520; i++) capture(String(i))
+    playback(false)
+    await waitForReplay()
+    assert.deepEqual(audioFrames(sent), Array.from({ length: 448 }, (_, i) => String(i + 72)))
+
+    sent.length = 0
+    playback(true)
+    const frame = "AAAA".repeat(1250)
+    for (let i = 0; i < 251; i++) capture(frame)
+    playback(false)
+    await waitForReplay()
+    assert.equal(audioFrames(sent).length, 250)
 })
