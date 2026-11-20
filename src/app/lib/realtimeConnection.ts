@@ -2,9 +2,24 @@ import { RefObject } from "react"
 import { recordRealtimeFetch } from "./client-telemetry"
 import * as semconv from "./semconv"
 
+export type RealtimeConnectionStage =
+    | "session_requested"
+    | "session_received"
+    | "requesting_microphone"
+    | "microphone_received"
+    | "exchanging_sdp"
+    | "answer_received"
+    | "waiting_for_data_channel"
+    | "data_channel_open"
+
 export async function createRealtimeConnection(
     EPHEMERAL_KEY: string,
     audioElement: RefObject<HTMLAudioElement | null>,
+    model: string,
+    signal: AbortSignal,
+    onMessage: (event: MessageEvent) => void,
+    onRemoteStream: (stream: MediaStream) => void,
+    onStage: (stage: RealtimeConnectionStage) => void,
 ): Promise<{ pc: RTCPeerConnection; dc: RTCDataChannel; localStream: MediaStream }> {
     // Start a transaction for the entire connection process
     const transaction = window.elasticApm?.startTransaction("gen_ai.realtime.connection", "webrtc");
@@ -15,14 +30,23 @@ export async function createRealtimeConnection(
         });
     }
 
+    let pc: RTCPeerConnection | null = null;
+    let ms: MediaStream | null = null;
+    const cleanup = () => {
+        ms?.getTracks().forEach((track) => track.stop());
+        pc?.close();
+    };
+    signal.addEventListener("abort", cleanup, { once: true });
     try {
+        signal.throwIfAborted();
         // Create RTCPeerConnection with span
         const peerConnSpan = transaction?.startSpan("gen_ai.realtime.peer_connection", "webrtc");
-        const pc = new RTCPeerConnection();
+        pc = new RTCPeerConnection();
         peerConnSpan?.end();
 
         // Set up track handler
         pc.ontrack = (e) => {
+            onRemoteStream(e.streams[0]);
             if (audioElement.current) {
                 audioElement.current.srcObject = e.streams[0];
                 
@@ -41,7 +65,10 @@ export async function createRealtimeConnection(
 
         // Get user media with span
         const mediaSpan = transaction?.startSpan("gen_ai.realtime.get_user_media", "webrtc");
-        const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
+        onStage("requesting_microphone");
+        ms = await navigator.mediaDevices.getUserMedia({ audio: true });
+        signal.throwIfAborted();
+        onStage("microphone_received");
         mediaSpan?.end();
 
         // Add local track with span
@@ -52,6 +79,7 @@ export async function createRealtimeConnection(
         // Create data channel with span
         const dataChannelSpan = transaction?.startSpan("gen_ai.realtime.data_channel", "webrtc");
         const dc = pc.createDataChannel("oai-events");
+        dc.addEventListener("message", onMessage);
         dataChannelSpan?.end();
 
         // Create offer with span
@@ -60,10 +88,7 @@ export async function createRealtimeConnection(
         await pc.setLocalDescription(offer);
         createOfferSpan?.end();
 
-        const baseUrl = "https://api.openai.com/v1/realtime";
-        const model = "gpt-4o-mini-realtime-preview";
-
-        const url = `${baseUrl}?model=${model}`;
+        const url = "https://api.openai.com/v1/realtime/calls";
         const method = "POST";
         let statusCode;
         let error;
@@ -80,8 +105,10 @@ export async function createRealtimeConnection(
         }
 
         try {
+            onStage("exchanging_sdp");
             sdpResponse = await fetch(url, {
                 method,
+                signal,
                 body: offer.sdp,
                 headers: {
                     Authorization: `Bearer ${EPHEMERAL_KEY}`,
@@ -102,7 +129,8 @@ export async function createRealtimeConnection(
             }
 
             if (!sdpResponse.ok) {
-                const errorMsg = `HTTP error! status: ${sdpResponse.status}`;
+                const detail = await sdpResponse.json().catch(() => null);
+                const errorMsg = detail?.error?.message || `Voice connection failed (HTTP ${sdpResponse.status}).`;
                 window.elasticApm?.captureError(errorMsg);
                 throw new Error(errorMsg);
             }
@@ -131,6 +159,7 @@ export async function createRealtimeConnection(
         // Process SDP answer with span
         const processAnswerSpan = transaction?.startSpan("gen_ai.realtime.process_answer", "webrtc");
         const answerSdp = await sdpResponse.text();
+        onStage("answer_received");
         const answer: RTCSessionDescriptionInit = {
             type: "answer",
             sdp: answerSdp,
@@ -141,12 +170,14 @@ export async function createRealtimeConnection(
         const remoteDescSpan = transaction?.startSpan("gen_ai.realtime.set_remote_desc", "webrtc");
         await pc.setRemoteDescription(answer);
         remoteDescSpan?.end();
+        onStage("waiting_for_data_channel");
 
         // Transaction successful - end it
         transaction?.end();
 
         return { pc, dc, localStream: ms };
     } catch (error) {
+        cleanup();
         // Record error in transaction
         if (transaction) {
             transaction.addLabels({
@@ -155,5 +186,7 @@ export async function createRealtimeConnection(
             transaction.end();
         }
         throw error;
+    } finally {
+        signal.removeEventListener("abort", cleanup);
     }
 }

@@ -1,3 +1,4 @@
+import { InvalidRequestError, readRequestObject } from "@/app/lib/agent-builder-kibana"
 import { NextRequest, NextResponse } from "next/server"
 import { Span, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api"
 import {
@@ -115,9 +116,10 @@ export async function POST(req: NextRequest) {
     })
 
     try {
-        const body = (await req.json()) as ChatRouteRequestBody
+        const body = (await readRequestObject(req)) as ChatRouteRequestBody
         const input = asNonEmptyStringOrNull(body.input)
-        const conversationId = asNonEmptyStringOrNull(body.conversationId) || asNonEmptyStringOrNull(body.conversation_id)
+        const conversationId =
+            asNonEmptyStringOrNull(body.conversationId) || asNonEmptyStringOrNull(body.conversation_id)
         const selectedRealtimeAgentName = asNonEmptyStringOrNull(body.selectedRealtimeAgentName)
 
         if (!input) {
@@ -148,6 +150,8 @@ export async function POST(req: NextRequest) {
             headers: {
                 "Content-Type": "application/json",
                 "kbn-xsrf": "true",
+                "x-elastic-internal-origin": "kibana",
+                Accept: "text/event-stream",
                 Authorization: authorization,
             },
             body: JSON.stringify({
@@ -155,23 +159,30 @@ export async function POST(req: NextRequest) {
                 agent_id: agentId,
                 ...(conversationId ? { conversation_id: conversationId } : {}),
             }),
+            signal: AbortSignal.any([req.signal, AbortSignal.timeout(120000)]),
             cache: "no-store",
+            redirect: "error",
         })
 
         span.setAttribute("http.status_code", upstreamResponse.status)
 
         if (!upstreamResponse.ok) {
-            const responseText = await upstreamResponse.text()
-            endSpan(span, SpanStatusCode.ERROR, `Kibana request failed with status ${upstreamResponse.status}: ${responseText}`)
+            await upstreamResponse.body?.cancel()
+            endSpan(span, SpanStatusCode.ERROR, `Kibana request failed with status ${upstreamResponse.status}`)
 
             return NextResponse.json(
                 {
                     error: "Agent Builder request failed",
                     status: upstreamResponse.status,
-                    details: responseText,
                 },
-                { status: upstreamResponse.status },
+                { status: upstreamResponse.status === 429 ? 429 : 502 },
             )
+        }
+
+        if (!upstreamResponse.headers.get("content-type")?.includes("text/event-stream")) {
+            await upstreamResponse.body?.cancel()
+            endSpan(span, SpanStatusCode.ERROR, "Unexpected upstream content type")
+            return NextResponse.json({ error: "Agent Builder did not return an event stream." }, { status: 502 })
         }
 
         if (!upstreamResponse.body) {
@@ -192,9 +203,17 @@ export async function POST(req: NextRequest) {
             headers: responseHeaders,
         })
     } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : "Unknown error while proxying Agent Builder stream"
-        endSpan(span, SpanStatusCode.ERROR, errorMessage, error)
-        return NextResponse.json({ error: errorMessage }, { status: 500 })
+        const isTimeout = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
+        const message =
+            error instanceof InvalidRequestError
+                ? error.message
+                : isTimeout
+                  ? "Agent Builder request timed out."
+                  : "Agent Builder is unavailable. Check its server configuration and credentials."
+        endSpan(span, SpanStatusCode.ERROR, message)
+        return NextResponse.json(
+            { error: message },
+            { status: error instanceof InvalidRequestError ? error.status : isTimeout ? 504 : 503 },
+        )
     }
 }
-

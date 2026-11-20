@@ -1,3 +1,4 @@
+import { InvalidRequestError, readRequestObject } from "@/app/lib/agent-builder-kibana"
 import { NextRequest, NextResponse } from "next/server"
 import { SpanKind, SpanStatusCode, trace } from "@opentelemetry/api"
 import { parseSseFrame, safeParseSseData, splitSseFrames } from "@/app/lib/agent-builder-sse"
@@ -120,7 +121,7 @@ async function readConversationResultFromSse(stream: ReadableStream<Uint8Array>)
                     conversationId = extractedConversationId
                 }
 
-                if (parsed.event === "conversation_created" || parsed.event === "round_complete") {
+                if (parsed.event === "conversation_created" || parsed.event === "conversation_updated") {
                     persisted = true
                 }
             }
@@ -153,7 +154,7 @@ export async function POST(req: NextRequest) {
     })
 
     try {
-        const body = (await req.json()) as MirrorRouteBody
+        const body = (await readRequestObject(req)) as MirrorRouteBody
         const text = asOptionalString(body.text)
         const selectedRealtimeAgentName = asOptionalString(body.selectedRealtimeAgentName)
         const conversationId = asOptionalString(body.conversationId)
@@ -200,34 +201,29 @@ export async function POST(req: NextRequest) {
         const converseUrl = resolveConverseUrl()
         const authorization = resolveAuthorizationHeader()
 
-        const abortController = new AbortController()
-        const timeoutId = setTimeout(() => abortController.abort(), MIRROR_CONVERSE_TIMEOUT_MS)
-
-        let response: Response
-        try {
-            response = await fetch(converseUrl, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "kbn-xsrf": "true",
-                    Authorization: authorization,
-                },
-                body: JSON.stringify({
-                    input: text,
-                    agent_id: mappedAgentId,
-                    ...(conversationId ? { conversation_id: conversationId } : {}),
-                }),
-                cache: "no-store",
-                signal: abortController.signal,
-            })
-        } finally {
-            // Do not clear the timeout here; we want it to cover the entire SSE read as well.
-        }
+        const response = await fetch(converseUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "kbn-xsrf": "true",
+                "x-elastic-internal-origin": "kibana",
+                Accept: "text/event-stream",
+                Authorization: authorization,
+            },
+            body: JSON.stringify({
+                input: text,
+                agent_id: mappedAgentId,
+                ...(conversationId ? { conversation_id: conversationId } : {}),
+            }),
+            cache: "no-store",
+            redirect: "error",
+            signal: AbortSignal.any([req.signal, AbortSignal.timeout(MIRROR_CONVERSE_TIMEOUT_MS)]),
+        })
 
         span.setAttribute("http.status_code", response.status)
 
         if (!response.ok) {
-            const details = await response.text()
+            await response.body?.cancel()
             span.setStatus({
                 code: SpanStatusCode.ERROR,
                 message: `Agent Builder mirror failed with status ${response.status}`,
@@ -240,57 +236,54 @@ export async function POST(req: NextRequest) {
                     conversationId: conversationId || null,
                     agentId: mappedAgentId,
                     mappedFromRealtimeAgent: mappedFromRealtimeAgent || null,
-                    error: details,
+                    error: "Agent Builder rejected the mirror request.",
                 },
-                { status: response.status },
+                { status: response.status === 429 ? 429 : 502 },
             )
         }
 
         let mirroredConversationId = conversationId || null
         let persisted = false
-        try {
-            if (response.body) {
-                const sseResult = await readConversationResultFromSse(response.body)
-                mirroredConversationId = sseResult.conversationId || mirroredConversationId
-                persisted = sseResult.persisted
-            }
-        } finally {
-            clearTimeout(timeoutId)
+        if (response.body && response.headers.get("content-type")?.includes("text/event-stream")) {
+            const sseResult = await readConversationResultFromSse(response.body)
+            mirroredConversationId = sseResult.conversationId || mirroredConversationId
+            persisted = sseResult.persisted
+        } else {
+            await response.body?.cancel()
         }
 
-        span.setStatus({ code: SpanStatusCode.OK })
+        span.setStatus({ code: persisted ? SpanStatusCode.OK : SpanStatusCode.ERROR })
         if (mirroredConversationId) {
             span.setAttribute("gen_ai.conversation.id", mirroredConversationId)
         }
         span.end()
 
         return NextResponse.json({
-            success: true,
-            status: "mirrored",
+            success: persisted,
+            status: persisted ? "mirrored" : "failed",
             conversationId: mirroredConversationId,
             agentId: mappedAgentId,
             mappedFromRealtimeAgent: mappedFromRealtimeAgent || null,
-            ...(persisted ? {} : { reason: "Mirror request completed, but persistence confirmation event was not observed." }),
+            ...(persisted
+                ? {}
+                : { reason: "Mirror request completed, but persistence confirmation event was not observed." }),
         })
     } catch (error) {
-        const isAbort = error instanceof Error && error.name === "AbortError"
+        const isAbort = error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")
         if (isAbort) {
-            span.setStatus({ code: SpanStatusCode.OK, message: "Mirror request timed out before completion" })
+            span.setStatus({ code: SpanStatusCode.ERROR, message: "Mirror request timed out before completion" })
             span.end()
             return NextResponse.json({
-                success: true,
-                status: "skipped",
+                success: false,
+                status: "failed",
                 conversationId: null,
                 agentId: process.env.AGENT_BUILDER_AGENT_ID?.trim() || DEFAULT_AGENT_ID,
                 reason: "Mirror request timed out before Agent Builder completed.",
             })
         }
 
-        const message = error instanceof Error ? error.message : "Failed to mirror Agent Builder turn"
+        const message = error instanceof InvalidRequestError ? error.message : "Agent Builder mirroring is unavailable."
         span.setStatus({ code: SpanStatusCode.ERROR, message })
-        if (error instanceof Error) {
-            span.recordException(error)
-        }
         span.end()
         return NextResponse.json(
             {
@@ -300,8 +293,7 @@ export async function POST(req: NextRequest) {
                 agentId: process.env.AGENT_BUILDER_AGENT_ID?.trim() || DEFAULT_AGENT_ID,
                 error: message,
             },
-            { status: 500 },
+            { status: error instanceof InvalidRequestError ? error.status : 503 },
         )
     }
 }
-

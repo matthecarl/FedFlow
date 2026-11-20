@@ -19,11 +19,6 @@ export function resolveAuthorizationHeader(): string {
         return apiKey.startsWith("ApiKey ") ? apiKey : `ApiKey ${apiKey}`
     }
 
-    const fallbackApiKey = process.env.ELASTICSEARCH_LOGSAI_API_KEY?.trim() || process.env.ELASTICSEARCH_CAPSTONE_API_KEY?.trim()
-    if (fallbackApiKey) {
-        return fallbackApiKey.startsWith("ApiKey ") ? fallbackApiKey : `ApiKey ${fallbackApiKey}`
-    }
-
     const username = process.env.KIBANA_USERNAME?.trim()
     const password = process.env.KIBANA_PASSWORD?.trim()
 
@@ -32,9 +27,7 @@ export function resolveAuthorizationHeader(): string {
         return `Basic ${encodedCredentials}`
     }
 
-    throw new Error(
-        "Kibana authentication is not configured. Set one of KIBANA_API_KEY, ELASTICSEARCH_LOGSAI_API_KEY, ELASTICSEARCH_CAPSTONE_API_KEY, or KIBANA_USERNAME/KIBANA_PASSWORD.",
-    )
+    throw new Error("Kibana authentication is not configured. Set KIBANA_API_KEY or KIBANA_USERNAME/KIBANA_PASSWORD.")
 }
 
 export function deriveKibanaUrlFromElasticsearchUrl(): string | null {
@@ -68,13 +61,16 @@ export function resolveConverseUrl(): string {
     const spaceId = process.env.KIBANA_SPACE_ID?.trim()
 
     if (spaceId) {
-        return `${normalizedBaseUrl}/s/${spaceId}/api/agent_builder/converse/async`
+        return `${normalizedBaseUrl}/s/${encodeURIComponent(spaceId)}/api/agent_builder/converse/async`
     }
 
     return `${normalizedBaseUrl}/api/agent_builder/converse/async`
 }
 
-export function resolveMappedAgentId(realtimeAgentName?: string): { mappedAgentId: string; mappedFromRealtimeAgent?: string } {
+export function resolveMappedAgentId(realtimeAgentName?: string): {
+    mappedAgentId: string
+    mappedFromRealtimeAgent?: string
+} {
     const defaultAgentId = process.env.AGENT_BUILDER_AGENT_ID?.trim() || DEFAULT_AGENT_ID
 
     if (!realtimeAgentName) {
@@ -125,3 +121,25 @@ export function resolveMappedAgentId(realtimeAgentName?: string): { mappedAgentI
     }
 }
 
+export class InvalidRequestError extends Error {
+    constructor(
+        message: string,
+        public status = 400,
+    ) {
+        super(message)
+    }
+}
+
+export async function readRequestObject(request: Request, maxLength = 100000): Promise<Record<string, unknown>> {
+    const raw = await request.text()
+    if (raw.length > maxLength) throw new InvalidRequestError("Request body is too large.", 413)
+    let body: unknown
+    try {
+        body = JSON.parse(raw)
+    } catch {
+        throw new InvalidRequestError("Invalid JSON request.")
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body))
+        throw new InvalidRequestError("Expected a JSON object.")
+    return body as Record<string, unknown>
+}

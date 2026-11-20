@@ -31,7 +31,7 @@ function Switch({
 }) {
     return (
         <label
-            className={`inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700 ${
+            className={`toolbar-switch inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700 ${
                 disabled ? "opacity-60 cursor-not-allowed" : ""
             }`}
         >
@@ -87,9 +87,9 @@ function BottomToolbar({
     const talkLabel = !isPTTActive ? "Talk" : isPTTUserSpeaking ? "Listening..." : "Hold to talk"
 
     return (
-        <footer className="border-t border-slate-200/70 bg-white/70 backdrop-blur">
-            <div className="app-container py-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <footer className="app-toolbar">
+            <div className="app-container toolbar-inner">
+                <div className="toolbar-layout">
                     <div className="flex items-center gap-3">
                         <button
                             onClick={onToggleConnection}
@@ -98,21 +98,10 @@ function BottomToolbar({
                         >
                             {connectionLabel}
                         </button>
-                        <div className="text-xs text-slate-600">
-                            {isRealtimeVoiceMode ? (
-                                <>
-                                    Status:{" "}
-                                    <span className="font-semibold text-slate-800">
-                                        {isConnected ? "Connected" : isConnecting ? "Connecting" : "Disconnected"}
-                                    </span>
-                                </>
-                            ) : (
-                                <span className="font-semibold text-slate-800">Voice controls disabled</span>
-                            )}
-                        </div>
+                        <span className="toolbar-hint">{!isRealtimeVoiceMode ? "Type your question above" : isConnected ? "Microphone connected" : isConnecting ? "Allow microphone access" : "Microphone off"}</span>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-3">
+                    <div className="toolbar-options">
                         <Switch
                             id="push-to-talk"
                             label="Push to talk"
@@ -120,12 +109,27 @@ function BottomToolbar({
                             onChange={setIsPTTActive}
                             disabled={!isConnected || isVoiceControlsDisabled}
                         />
-                        <button
-                            onMouseDown={handleTalkButtonDown}
-                            onMouseUp={handleTalkButtonUp}
-                            onTouchStart={handleTalkButtonDown}
-                            onTouchEnd={handleTalkButtonUp}
-                            disabled={!isPTTActive || isVoiceControlsDisabled}
+                        {isPTTActive && <button
+                            onPointerDown={(event) => {
+                                event.currentTarget.setPointerCapture(event.pointerId)
+                                handleTalkButtonDown()
+                            }}
+                            onPointerUp={handleTalkButtonUp}
+                            onPointerCancel={handleTalkButtonUp}
+                            onKeyDown={(event) => {
+                                if ((event.key === " " || event.key === "Enter") && !event.repeat) {
+                                    event.preventDefault()
+                                    handleTalkButtonDown()
+                                }
+                            }}
+                            onKeyUp={(event) => {
+                                if (event.key === " " || event.key === "Enter") {
+                                    event.preventDefault()
+                                    handleTalkButtonUp()
+                                }
+                            }}
+                            onBlur={() => { if (isPTTUserSpeaking) handleTalkButtonUp() }}
+                            disabled={!isConnected || !isPTTActive || isVoiceControlsDisabled}
                             className={
                                 "btn " +
                                 (!isPTTActive || isVoiceControlsDisabled
@@ -136,10 +140,8 @@ function BottomToolbar({
                             }
                         >
                             {talkLabel}
-                        </button>
-                    </div>
+                        </button>}
 
-                    <div className="flex flex-wrap items-center gap-3">
                         <Switch
                             id="audio-playback"
                             label="Audio playback"

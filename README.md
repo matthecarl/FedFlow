@@ -1,306 +1,134 @@
 # Realtime API Agents RAG Demo
 
-This is a simple demonstration of more advanced, agentic patterns built on top of the Realtime API. In particular, this demonstrates:
+A Next.js and TypeScript voice application that combines OpenAI Realtime with Elasticsearch retrieval and agent handoffs. Agents answer questions using indexed Elastic Search Labs, VA, Medicare, IRS, and congressional biography content. Agent Builder text chat and observability are optional integrations.
 
-- Sequential agent handoffs according to a defined agent graph (taking inspiration from [OpenAI Swarm](https://github.com/openai/swarm))
-- Retrieves context from a elastic vector db and passes to llm.
+![Screenshot of the Realtime API Agents Demo](public/screenshot.png)
 
-You should be able to use this repo to prototype your own multi-agent realtime voice app in less than 20 minutes!
+## Local setup
 
-![Screenshot of the Realtime API Agents Demo](/public/screenshot.png)
+Use Node.js 20.9 or newer and npm. Install the locked dependencies:
 
-## Setup
-
-- This is a Next.js typescript app
-- Install dependencies with `npm i`
-- Add your `OPENAI_API_KEY` to your env
-- Start the server with `npm run dev`
-- Open your browser to [http://localhost:3000](http://localhost:3000) to see the app. It should automatically connect to the `semanticSearch` Agent Set.
-
-## Unified Voice + Text (`/`)
-
-This app now uses a single combined UI at [http://localhost:3000](http://localhost:3000):
-
-- OpenAI Realtime remains authoritative for user-visible assistant responses
-- Typed and voice turns are mirrored to Agent Builder for Elastic-side visibility
-- Mirror events are indexed into Elasticsearch for filtering and analysis
-
-### Required env vars for Agent Builder mirroring
-
-- `KIBANA_URL`
-- `KIBANA_API_KEY` (preferred) or `KIBANA_USERNAME` + `KIBANA_PASSWORD`
-- `AGENT_BUILDER_AGENT_ID` (defaults to `elastic-ai-agent` if omitted)
-- Kibana credentials must have Agent Builder access (for example `read_agent_builder`)
-- `AGENT_BUILDER_AGENT_MAP_JSON` (optional JSON map from realtime agent name to Agent Builder agent id)
-
-Compatibility fallbacks:
-
-- If `KIBANA_URL` is missing, the app derives Kibana from `ELASTICSEARCH_CAPSTONE_URL` by replacing `.es.` with `.kb.` when the hostname includes `.es.`
-- If `KIBANA_API_KEY` is missing, the app tries `ELASTICSEARCH_LOGSAI_API_KEY`, then `ELASTICSEARCH_CAPSTONE_API_KEY`
-
-Optional:
-
-- `KIBANA_SPACE_ID` for space-aware API paths
-- `AGENT_BUILDER_INDEX_NAME` to override the default `agent-builder-chat-events-v1` index
-
-### Telemetry env vars
-
-Server-side OpenTelemetry (canonical path for custom `gen_ai.*` events):
-
-- `ENABLE_OTEL=true` to enable local/dev OTel bootstrap
-- `OTEL_EXPORTER_OTLP_ENDPOINT` (Elastic APM OTLP endpoint)
-- `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`
-- `OTEL_SERVICE_NAME` (for service identity)
-- `TELEMETRY_CAPTURE_FULL_CONTENT=true|false` (defaults to `true`)
-
-Client telemetry transport:
-
-- `NEXT_PUBLIC_TELEMETRY_TRANSPORT=server|rum|both` (defaults to `both` for migration overlap)
-- `NEXT_PUBLIC_TELEMETRY_MIRROR_TO_RUM=true|false` (defaults to `true`)
-
-Elastic RUM bootstrap (for built-in RUM dashboards):
-
-- `NEXT_PUBLIC_ELASTIC_APM_SERVER_URL`
-- `NEXT_PUBLIC_ELASTIC_APM_SERVICE_NAME`
-- `NEXT_PUBLIC_ELASTIC_APM_ENVIRONMENT` (optional, defaults to `NODE_ENV`)
-- `NEXT_PUBLIC_ELASTIC_APM_SERVICE_VERSION` (optional, defaults to app version)
-
-### Data visibility in Elastic
-
-Realtime + Agent Builder mirror flow emits observability telemetry and persists events to Elasticsearch:
-
-- Server-side OTel spans/metrics for custom `gen_ai.*` instrumentation
-- Optional mirrored RUM transactions during migration (`NEXT_PUBLIC_TELEMETRY_TRANSPORT=both`)
-- Full realtime and mirror event records indexed into `AGENT_BUILDER_INDEX_NAME`
-
-Migration note:
-
-- After validating dashboards, set `NEXT_PUBLIC_TELEMETRY_MIRROR_TO_RUM=false` and `NEXT_PUBLIC_TELEMETRY_TRANSPORT=server`.
-
-Agent Builder model note:
-
-- The agent details API returns tool configuration, but does not reliably expose the underlying model in this payload.
-- Treat Kibana Agent Builder / inference configuration UI as the source of truth for model selection.
-
-Persisted chat indexing uses:
-
-- `ELASTICSEARCH_CAPSTONE_URL`
-- `ELASTICSEARCH_LOGSAI_API_KEY`
-
-### Next steps
-
-- Check out the configs in `src/app/agentConfigs`. The example above is a minimal demo that illustrates the core concepts.
-
-### Defining your own agents
-
-- To see how to define tools and toolLogic, including a background LLM call, see [src/app/agentConfigs/semanticSearch/elasticBlogsAgent.ts](src/app/agentConfigs/semanticSearch/elasticBlogsAgent.ts)
-
-## UI
-
-- You can automatically switch to a specific agent with the Agent dropdown.
-- The conversation transcript is on the left, including tool calls, tool call responses, and agent changes. Click to expand non-message elements.
-- The event log is on the right, showing both client and server events. Click to see the full payload.
-- On the bottom, you can disconnect, toggle between automated voice-activity detection or PTT, turn off audio playback, and toggle logs.
-
-## System Architecture and Data Flow
-
-```
-                                                                +-------------------+
-                                                                |                   |
-                                                                |   OpenTelemetry   |
-                                 +--------------------------->  |   Collectors      |
-                                 |                              |                   |
-                                 |                              +--------+----------+
-                                 |                                       |
-                                 |                                       v
-                                 |                              +-----------------+
-                                 |                              |                 |
-                                 |                              |   Elastic       |
-                                 |                              |   Search        |
-                                 |                              |                 |
-                                 |                              +-----------------+
-                                 |
-+-------------+                  |                              +------------------+
-|             |                  |                              |                  |
-|  Browser    |    +---------+   |    +------------+            |   Elasticsearch  |
-|  Client     | <--+ Next.js  +---+    |            |           |   Service (API)  |
-|             | +-->  App    <---------+  OpenAI    |           |                  |
-+------+------+ |  |         | +------>  Realtime   |           +--------+---------+
-       ^        |  +---------+ |       |  API       |                    ^
-       |        |              |       |            |                    |
-       |        |  +---------+ |       +------------+                    |
-       |        |  |         | |                                         |
-       +--------+--+ Events  +-+                                         |
-                |  | Context | +-------------------> +--------------+    |
-                |  |         |                       |              |    |
-                |  +---------+                       |  Medicare    +----+
-                |                                    |  VA API      |
-                |  +---------+                       |  Services    |
-                |  |         |                       |              |
-                |  | Agent   |                       +--------------+
-                |  | Configs |
-                |  |         |
-                |  +---------+
-                |
-                |  +---------+
-                |  |         |                       +---------------+
-                |  | Client  +----------------------->               |
-                |  | Telemetry+----------------------> Telemetry     |
-                |  |         <---------------------+ | Endpoint      |
-                |  +---------+                       +-------+-------+
-                                                             |
-                                                             v
-                                                     +---------------+
-                                                     |               |
-                                                     | Observability |
-                                                     | & Monitoring  |
-                                                     |               |
-                                                     +---------------+
+```sh
+npm ci
 ```
 
-## Component Description
+For a new checkout, copy `.env.example` to `.env.local` and supply credentials. If an environment file already exists, update its existing keys rather than creating conflicting definitions. Never put API keys in `NEXT_PUBLIC_*` variables or commit real environment files.
 
-### Client-Side Components
+The voice and retrieval demo requires:
 
-1. **Browser Client**: The user interface where users interact with the application.
+| Variable | Purpose |
+| --- | --- |
+| `DEMO_PASSWORD_ENABLED` | Optional; protected by default. Set exactly `false` to temporarily disable the password gate |
+| `DEMO_PASSWORD` | Random password of at least 16 characters when protection is enabled; login username is `demo` |
+| `OPENAI_API_KEY` | Server-side OpenAI key with Realtime access and available quota |
+| `OPENAI_REALTIME_MODEL` | Optional; defaults to `gpt-realtime-2.1-mini` |
+| `ELASTICSEARCH_CAPSTONE_URL` | Elasticsearch HTTPS endpoint |
+| `ELASTICSEARCH_CAPSTONE_API_KEY` | Encoded API key permitted to read the five indices and use their inference services |
 
-2. **Next.js App**: The main web application framework:
+```sh
+npm run dev
+```
 
-    - Renders the UI
-    - Manages client-side routing
-    - Serves as the application container
+Open [http://localhost:3000](http://localhost:3000), sign in with username `demo` and your `DEMO_PASSWORD` if protection is enabled, allow microphone access when prompted. Realtime voice connects automatically once the selected agent is ready. Disconnect stops the session and does not automatically reconnect; select **Connect** to resume. A failed connection waits for an explicit retry. If the browser blocks audio autoplay, select **Enable audio**. The browser must use localhost or HTTPS for microphone access.
 
-3. **Events Context**: Manages the state of events in the application:
+Realtime voice requires a working microphone even for typed messages. Denied/unavailable microphone access, or a connection timeout while waiting for the microphone, opens a blocking recovery dialog. Allow access in browser/site and device settings, then use **Refresh and try again** and accept the prompt when the app reconnects. Alternatively, **I've enabled my microphone — reconnect** retries without reloading. Refreshing alone does not clear a saved permission denial. Network failures retain the normal connection error instead of this dialog.
 
-    - Tracks event streams
-    - Maintains event history
-    - Provides event dispatching
+By default, every page and API route is protected by HTTP Basic authentication in `src/proxy.ts`. Missing or short passwords return 503 rather than exposing the app. Set `DEMO_PASSWORD_ENABLED=false` and redeploy to temporarily disable the gate during troubleshooting; no password is required while disabled. Cross-origin API blocking, private/no-store caching headers, and removal of cached Authorization credentials from downstream requests remain active. Remove the flag or set it to `true` and redeploy to restore protection. Keep the password server-side and use HTTPS outside localhost. Browsers remember Basic credentials; use a private browser window and close it after the demo. Rotate `DEMO_PASSWORD` and redeploy to change access. Older deployments keep their original configuration and need separate Vercel protection or removal. This shared password is for controlled demos, not individual user accounts.
 
-4. **Agent Configs**: Contains configuration for various AI agents:
+The server mints a short-lived token with `/v1/realtime/client_secrets`; the browser exchanges its SDP offer at `/v1/realtime/calls`. The standard OpenAI key stays on the server. Replacing a key alone does not migrate applications using the retired beta session API.
 
-    - Defines agent behaviors
-    - Specifies metadata and capabilities
-    - Configures agent-specific parameters
+Specialist handoffs retain the Realtime conversation and explicitly pass `user_question` and `conversation_context` in the transfer tool result. The outgoing agent announces an obvious transfer without asking for routing approval. The receiving specialist introduces itself, summarizes the question, and asks for confirmation before retrieving an answer. Its introductory response disables tool calls for that turn only. After confirmation or correction, it searches using the resolved question and context. Generated wording can vary.
 
-5. **Client Telemetry**: Collects client-side metrics and events:
-    - Captures user interactions
-    - Monitors performance
-    - Tracks usage patterns
-    - Records token usage
+## Data sources
 
-### Server-Side Components
+These are existing Elasticsearch indices, not live calls to the source websites. The application does not crawl or populate them during setup. It queries the public `semantic_text` interface and returns retrieved passages and available source URLs.
 
-1. **OpenAI Realtime API**: The core AI service:
+| Agent | Application route | Index | Semantic field |
+| --- | --- | --- | --- |
+| Elastic | `/api/elasticsearch` | `search-labs-blogs` | `body_semantic` |
+| VA | `/api/va` | `search-va` | `semantic_text` |
+| Medicare | `/api/medicare` | `search-medicare` | `semantic_text` |
+| IRS | `/api/irs` | `search-irs` | `semantic_text` |
+| BioGuide | `/api/bioguide` | `person` | `profileText_semantic` |
 
-    - Processes realtime requests
-    - Handles streaming responses
-    - Manages conversation context
-    - Provides tool calling capabilities
+VA, IRS, and BioGuide combine lexical and semantic retrieval using reciprocal rank fusion. The other routes use semantic retrieval. The indices must contain the expected fields, and their mapped inference endpoints must have healthy model allocations. Green index health does not establish inference readiness.
 
-2. **Elasticsearch Service**: Knowledge base for semantic search:
+First retrieval verification after starting the app:
 
-    - Indexes documents
-    - Provides vector search capabilities
-    - Stores searchable content
+```sh
+curl --user demo --fail-with-body 'http://localhost:3000/api/elasticsearch?q=What%20is%20semantic%20search%3F'
+```
 
-3. **Medicare/VA API Services**: Domain-specific data providers:
+Enter the demo password at curl's prompt. When `DEMO_PASSWORD_ENABLED=false`, omit `--user demo` to skip that prompt. A successful response contains a `results` array. Review the returned passages and sources as well as the HTTP status.
 
-    - Offer structured data access
-    - Provide specialized information
-    - Support agent knowledge base
+## Optional Agent Builder and observability
 
-4. **Telemetry Endpoint**: Central collection point for metrics:
+**Agent Builder text mode** requires `KIBANA_URL` and an explicit `KIBANA_API_KEY` with access to the selected space and Agent Builder. Alternatively, set `KIBANA_USERNAME` and `KIBANA_PASSWORD`. Search and event-ingestion keys are never reused as Kibana credentials. If omitted, the Kibana URL can be derived from an Elasticsearch hostname containing `.es.`.
 
-    - Receives client-side telemetry
-    - Processes and aggregates metrics
-    - Forwards data to observability systems
+- `AGENT_BUILDER_AGENT_ID` defaults to `elastic-ai-agent`.
+- `AGENT_BUILDER_AGENT_MAP_JSON` optionally maps Realtime agent names to Agent Builder agent IDs.
+- `KIBANA_SPACE_ID` selects a non-default space.
+- Agent Builder model selection is controlled by Kibana and its inference configuration.
 
-5. **OpenTelemetry Collectors**: Distributed tracing infrastructure:
+**Voice mirroring** is disabled by default. Set `NEXT_PUBLIC_AGENT_BUILDER_MIRROR_ENABLED=true` to send voice/text turns to Agent Builder in addition to OpenAI. This performs additional processing; it is not passive logging. Rebuild after changing this public setting.
 
-    - Collects traces and spans
-    - Processes telemetry data
-    - Routes to storage backends
+**Persisted Agent Builder events** additionally require `ELASTICSEARCH_LOGSAI_API_KEY` with append/create-document permission on the pre-created event index. `AGENT_BUILDER_INDEX_NAME` defaults to `agent-builder-chat-events-v1`. It uses `ELASTICSEARCH_CAPSTONE_URL`.
 
-6. **Elastic Search (Observability)**: Storage for monitoring data:
+**Full transcript capture** is disabled by default. Set `TELEMETRY_CAPTURE_FULL_CONTENT=true` only when you intend telemetry and persisted events to include conversation content. Credential redaction still applies.
 
-    - Long-term metrics storage
-    - Enables data visualization
-    - Supports observability
+**FullStory** is disabled by default and requires both `NEXT_PUBLIC_ENABLE_FULLSTORY=true` and `NEXT_PUBLIC_FULLSTORY_ORG_ID`. Rebuild after changing these public settings.
 
-7. **Observability & Monitoring**: Analysis of system health:
-    - Dashboards for system metrics
-    - Alerting on anomalies
-    - Performance monitoring
+**OpenTelemetry** initializes in production. For local development, enable it with `ENABLE_OTEL=true`. Configure `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_SERVICE_NAME` for your collector; the exporters use HTTP/protobuf. Optional browser RUM configuration uses `NEXT_PUBLIC_ELASTIC_APM_SERVER_URL`, `NEXT_PUBLIC_ELASTIC_APM_SERVICE_NAME`, and optional environment/version values. Client transport can be selected with `NEXT_PUBLIC_TELEMETRY_TRANSPORT=server|rum|both`; `NEXT_PUBLIC_TELEMETRY_MIRROR_TO_RUM=false` avoids duplicate RUM mirroring.
 
-## Data Flow
+The optional email action requires a server-side `ZAP_URL` webhook. Leave it unset when email delivery is not part of your demo.
 
-### Primary Flows
+## Validation and demo rehearsal
 
-1. **User Interaction Flow**:
+```sh
+npm run lint
+node --test tests/*.test.cjs
+npm run build
+npm start
+```
 
-    - User interacts with Browser Client
-    - Next.js App processes interactions
-    - Requests flow to OpenAI Realtime API
-    - Responses return through the Events Context
-    - UI updates with received data
+Tests exercise API validation, retrieval behavior, event handling, handoffs, telemetry safety, and connection cleanup with mocked external services. They do not establish live credentials, deployed model health, or microphone/audio behavior.
 
-2. **Knowledge Base Flow**:
+Verify a running local server or deployment with the repeatable API smoke check:
 
-    - OpenAI calls for external data
-    - Requests route to Elasticsearch Service
-    - Domain services (Medicare/VA) provide specialized data
-    - Data flows back to OpenAI for context augmentation
-    - Results incorporate into responses
+```sh
+node --env-file=.env.local scripts/check-demo.mjs https://your-preview-deployment.vercel.app
+```
 
-3. **Telemetry Flow**:
-    - Client Telemetry collects metrics
-    - Data transmits to Telemetry Endpoint
-    - OpenTelemetry processes and aggregates
-    - Metrics store in Elastic Search
-    - Observability tools visualize the data
+This checks the homepage, creates one short-lived Realtime token without printing it, and verifies nonempty results from all five Elasticsearch search routes. It exits nonzero on any failure and sends no email. Microphone capture, audio playback, interruption, and agent handoffs still require the browser rehearsal below.
 
-### Bidirectional Communications
+Before recording:
 
-1. **Client ↔ Server**:
+1. Open the app, select **Connect**, and confirm the status becomes **Connected** and the greeting appears and plays.
+2. Ask an Elastic question. Confirm retrieval returns relevant source material and a spoken answer.
+3. Type a follow-up and confirm the transcript and audio complete.
+4. Ask to switch to VA or another agent, then ask a relevant question. Check the answer and source links.
+5. Interrupt an answer; exercise push-to-talk and audio playback controls.
+6. Disconnect and reconnect. Confirm microphone capture stops after disconnect and no repeated automatic retries occur on errors.
+7. Test Agent Builder text mode separately if it is part of the recording.
 
-    - Browser ↔ Next.js: UI rendering and user input
-    - Next.js ↔ OpenAI: AI requests and streaming responses
-    - Client ↔ Telemetry: Metrics collection and status feedback
+The conversation transcript includes messages and expandable tool details. The agent selector changes the active agent; the event panel helps diagnose requests and responses. Keep diagnostic panels closed for the recording when they are not needed.
 
-2. **Server ↔ Services**:
-    - Next.js ↔ Elasticsearch: Knowledge retrieval
-    - Next.js ↔ Domain APIs: Specialized data access
-    - Telemetry ↔ Observability: Monitoring and analysis
+## Vercel deployment
 
-## Key Features
+Set the required environment variables on the intended Vercel project and environment. Preview and Production settings are separate. `NEXT_PUBLIC_*` settings are included at build time, so updating them requires a new deployment.
 
-1. **Realtime Response**:
+Build and test a preview before promoting it. Verify the project, deployment URL, Git commit, domain alias, and runtime behavior; Vercel **Ready** means the deployment built, not that OpenAI or Elasticsearch requests work. This README describes configuration and validation, not the current deployment or cluster-upgrade status.
 
-    - Streaming AI responses
-    - Immediate feedback loops
-    - Progressive rendering
+## Extending the agents
 
-2. **Context Awareness**:
+Agent prompts, tool schemas, and tool implementations live in [`src/app/agentConfigs`](src/app/agentConfigs). Start with [`elasticBlogsAgent.ts`](src/app/agentConfigs/semanticSearch/elasticBlogsAgent.ts). Retrieval routes live under `src/app/api`; the shared search implementation is [`utility.ts`](src/app/api/utility.ts).
 
-    - Persistent conversation state
-    - Knowledge augmentation
-    - Domain-specific understanding
+The main flow is browser → OpenAI Realtime → tool call → Next.js retrieval route → Elasticsearch → spoken response. Agent Builder and telemetry run as separate integrations.
 
-3. **Comprehensive Telemetry**:
+## Core contributors
 
-    - Token usage tracking (including cached tokens)
-    - Performance metrics
-    - Error monitoring
-    - Response quality analysis
+- Noah MacCallum — [noahmacca](https://x.com/noahmacca)
+- Ilan Bigio — [ibigio](https://github.com/ibigio)
+- Matt Carl — application adaptations and Elastic integrations
 
-4. **Specialized Agents**:
-    - Domain-configured behaviors
-    - Targeted knowledge bases
-    - Use-case optimized responses
-
-## Core Contributors
-
-- Noah MacCallum - [noahmacca](https://x.com/noahmacca)
-- Ilan Bigio - [ibigio](https://github.com/ibigio)
-
-- and now me, since this repo has changed quite a bit
+The responsive conversation shell fills the available viewport height. Conversation and diagnostics scroll independently; the message composer and connection controls remain visible. Logs use a side panel on wide screens and a dedicated view on narrow screens (toggle Logs off to return). Input autofocus is disabled so a phone keyboard only opens when requested.

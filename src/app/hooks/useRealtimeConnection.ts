@@ -1,13 +1,14 @@
 import { useRef, useState, useEffect } from "react"
 import { v4 as uuidv4 } from "uuid"
 import { SessionStatus, UseRealtimeConnectionProps } from "@/app/types"
-import { createRealtimeConnection } from "@/app/lib/realtimeConnection"
+import { createRealtimeConnection, RealtimeConnectionStage } from "@/app/lib/realtimeConnection"
 import { parseSseFrame, safeParseSseData, splitSseFrames } from "@/app/lib/agent-builder-sse"
 import { useTranscript } from "@/app/contexts/TranscriptContext"
 import { useEvent } from "@/app/contexts/EventContext"
 import { useHandleServerEvent } from "./useHandleServerEvent"
 import { useAgentBuilderMirror } from "./useAgentBuilderMirror"
 import { recordServerEvent } from "../lib/client-telemetry"
+import { RealtimeResponseCoordinator } from "@/app/lib/realtimeResponseCoordinator"
 
 export function useRealtimeConnection({
     selectedAgentName,
@@ -16,6 +17,17 @@ export function useRealtimeConnection({
     conversationMode,
 }: UseRealtimeConnectionProps) {
     const [sessionStatus, setSessionStatus] = useState<SessionStatus>("DISCONNECTED")
+    const [connectionError, setConnectionError] = useState<string | null>(null)
+    const [microphoneRequired, setMicrophoneRequired] = useState(false)
+    const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false)
+    const connectionAbortRef = useRef<AbortController | null>(null)
+    const initializedAgentRef = useRef<string | null>(null)
+    const handoffConfiguredAgentRef = useRef<string | null>(null)
+    const configuredPTTRef = useRef<boolean | null>(null)
+    const autoConnectAttemptedRef = useRef(false)
+    const deliberatelyDisconnectedRef = useRef(false)
+    const responseCoordinatorRef = useRef<RealtimeResponseCoordinator | null>(null)
+    const audioPlayingRef = useRef(false)
     const [dataChannel, setDataChannel] = useState<RTCDataChannel | null>(null)
     const [localStream, setLocalStream] = useState<MediaStream | null>(null)
     const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
@@ -43,7 +55,6 @@ export function useRealtimeConnection({
     const pcRef = useRef<RTCPeerConnection | null>(null)
     const dcRef = useRef<RTCDataChannel | null>(null)
     const audioElementRef = useRef<HTMLAudioElement | null>(null)
-    const manualDisconnectRef = useRef(false)
     const updateSessionCounterRef = useRef(0)
     const dcEventHandlersRef = useRef<{
         open: () => void
@@ -54,11 +65,14 @@ export function useRealtimeConnection({
     const agentBuilderConversationIdRef = useRef<string | null>(null)
     const agentBuilderConversationIdsByAgentRef = useRef<Record<string, string>>({})
 
-    const { addTranscriptMessage, addTranscriptBreadcrumb, updateTranscriptMessage, updateTranscriptItemStatus, transcriptItems } =
+    const { addTranscriptMessage, addTranscriptBreadcrumb, updateTranscriptMessage, updateTranscriptItemStatus } =
         useTranscript()
     const { logClientEvent, logServerEvent } = useEvent()
     const { mirrorTurn } = useAgentBuilderMirror()
     const isRealtimeVoiceMode = conversationMode === "realtime_voice_mirror"
+    if (!responseCoordinatorRef.current) {
+        responseCoordinatorRef.current = new RealtimeResponseCoordinator(sendWireEvent, uuidv4)
+    }
 
     // Prevent cross-agent context leakage in Agent Builder text mode by keying conversation IDs per selected agent.
     useEffect(() => {
@@ -159,6 +173,15 @@ export function useRealtimeConnection({
 
     // Function to send events to the client
     function sendClientEvent(eventObj: any, eventNameSuffix = "") {
+        if (eventObj.type === "response.create") {
+            if (dcRef.current?.readyState !== "open") return
+            responseCoordinatorRef.current?.request({ ...eventObj, event_id: eventObj.event_id || uuidv4() }, eventNameSuffix)
+            return
+        }
+        sendWireEvent(eventObj, eventNameSuffix)
+    }
+
+    function sendWireEvent(eventObj: any, eventNameSuffix = "") {
         if (dcRef.current && dcRef.current.readyState === "open") {
             logClientEvent(eventObj, eventNameSuffix)
 
@@ -183,15 +206,20 @@ export function useRealtimeConnection({
                 if (eventObj.type === "session.update.after.transfer") {
                     console.log(`[TRANSFER] Triggering session update after transfer to: ${eventObj.agent}`)
                     // Convert to a regular session update
-                    updateSession(false)
+                    updateSession(false, eventObj.agent)
+                    handoffConfiguredAgentRef.current = eventObj.agent
                     return
                 }
 
                 // Send the event via data channel
                 dcRef.current.send(JSON.stringify(eventObj))
+                if (eventObj.type === "conversation.item.create" && eventObj.item?.type === "function_call_output") {
+                    responseCoordinatorRef.current?.toolOutputSent(eventObj.item.call_id)
+                }
             } catch (error) {
                 window.elasticApm?.captureError(`Failed to send message: ${error}`)
                 console.error("Failed to send message", error)
+                if (eventObj.type === "response.create") responseCoordinatorRef.current?.reset()
             }
         } else {
             logClientEvent({ attemptedEvent: eventObj.type }, "error.data_channel_not_open")
@@ -201,108 +229,142 @@ export function useRealtimeConnection({
         }
     }
 
-    // Function to fetch ephemeral key for WebRTC connection
-    const fetchEphemeralKey = async (): Promise<string | null> => {
-        logClientEvent({ url: "/session" }, "fetch_session_token_request")
-        const tokenResponse = await fetch("/api/session")
-        const data = await tokenResponse.json()
-        logServerEvent(data, "fetch_session_token_response")
-
-        if (!data.client_secret?.value) {
-            logClientEvent(data, "error.no_ephemeral_key")
-            console.error("No ephemeral key provided by the server")
-            window.elasticApm?.captureError(`No ephemeral key provided by the server`)
-            setSessionStatus("DISCONNECTED")
-            return null
-        }
-
-        return data.client_secret.value
-    }
-
-    // Function to connect to the realtime service
+    // Tokens are short-lived credentials: never put them in the event log.
     const connectToRealtime = async () => {
-        if (sessionStatus !== "DISCONNECTED") return
+        if (connectionAbortRef.current || sessionStatus !== "DISCONNECTED") return
+        autoConnectAttemptedRef.current = true
+        const controller = new AbortController()
+        connectionAbortRef.current = controller
+        setConnectionError(null)
+        setMicrophoneRequired(false)
         setSessionStatus("CONNECTING")
+        const startedAt = Date.now()
+        let stage: RealtimeConnectionStage = "session_requested"
+        const awaitingMicrophone = () => stage === "requesting_microphone"
+        const reportStage = (nextStage: RealtimeConnectionStage) => {
+            if (controller.signal.aborted) return
+            stage = nextStage
+            logClientEvent({ type: "connection.stage", stage, elapsedMs: Date.now() - startedAt })
+        }
+        reportStage("session_requested")
+        const timeout = setTimeout(() => {
+            setMicrophoneRequired(awaitingMicrophone())
+            const message = stage === "requesting_microphone"
+                ? "Microphone permission or device initialization timed out. Check the browser's microphone prompt and system microphone access, then select Connect."
+                : stage === "session_requested"
+                  ? "Voice session creation timed out. Check your connection and select Connect to retry."
+                  : stage === "exchanging_sdp"
+                    ? "The voice service did not finish the connection exchange. Check your network or VPN and select Connect to retry."
+                    : stage === "waiting_for_data_channel" || stage === "answer_received"
+                      ? "The voice connection could not open its realtime channel. Check your network or VPN and select Connect to retry."
+                      : "Voice connection timed out. Select Connect to retry."
+            logClientEvent({ type: "connection.timeout", stage, elapsedMs: Date.now() - startedAt })
+            controller.abort(new Error(message))
+        }, 30000)
+        // Permission prompts can remain pending indefinitely; update the UI when
+        // cancelled or timed out even before getUserMedia/SDP has returned.
+        controller.signal.addEventListener("abort", () => {
+            clearTimeout(timeout)
+            if (connectionAbortRef.current === controller) {
+                setConnectionError(controller.signal.reason instanceof Error ? controller.signal.reason.message : "Voice connection cancelled.")
+                disconnectFromRealtime()
+            }
+        }, { once: true })
 
         try {
-            const EPHEMERAL_KEY = await fetchEphemeralKey()
-            if (!EPHEMERAL_KEY) {
-                return
+            const tokenResponse = await fetch("/api/session", { method: "POST", signal: controller.signal, cache: "no-store" })
+            const data = await tokenResponse.json()
+            logServerEvent({ status: tokenResponse.status, model: data.model }, "fetch_session_token_response")
+            if (!tokenResponse.ok || !data.value) {
+                throw new Error(typeof data.error === "string" ? data.error : "The server could not create a voice session.")
             }
-
-            if (!audioElementRef.current) {
-                audioElementRef.current = document.createElement("audio")
-            }
+            controller.signal.throwIfAborted()
+            reportStage("session_received")
+            if (!audioElementRef.current) audioElementRef.current = document.createElement("audio")
             audioElementRef.current.autoplay = isAudioPlaybackEnabled
 
-            const { pc, dc, localStream } = await createRealtimeConnection(EPHEMERAL_KEY, audioElementRef)
+            const handleMessage = (event: MessageEvent) => {
+                if (controller.signal.aborted) return
+                try {
+                    const message = JSON.parse(event.data)
+                    if (message.type === "input_audio_buffer.speech_started") {
+                        responseCoordinatorRef.current?.beginInput()
+                        cancelAssistantSpeech()
+                    }
+                    responseCoordinatorRef.current?.receive(message)
+                    if (message.type === "output_audio_buffer.started") audioPlayingRef.current = true
+                    if (message.type === "output_audio_buffer.stopped" || message.type === "output_audio_buffer.cleared") audioPlayingRef.current = false
+                    handleServerEventRef.current(message)
+                    if (message.type === "error" && message.error?.code === "conversation_already_has_active_response") {
+                        // A rejected create has no response ID to await. Keep the
+                        // real error visible and release media instead of hanging
+                        // or blindly retrying into another overlapping response.
+                        setConnectionError("Voice replies overlapped. Select Connect to start a fresh session.")
+                        disconnectFromRealtime()
+                        return
+                    }
+                    responseCoordinatorRef.current?.flush()
+                } catch {
+                    logClientEvent({}, "error.invalid_server_event")
+                }
+            }
+            const { pc, dc, localStream: stream } = await createRealtimeConnection(
+                data.value, audioElementRef, data.model, controller.signal, handleMessage, setRemoteStream, reportStage,
+            )
+            controller.signal.throwIfAborted()
             pcRef.current = pc
             dcRef.current = dc
-            setLocalStream(localStream)
-
-            // Attach remote stream to state once available
-            const timeoutId = setTimeout(() => {
-                if (audioElementRef.current && audioElementRef.current.srcObject) {
-                    setRemoteStream(audioElementRef.current.srcObject as MediaStream)
-                }
-            }, 1000)
-
-            // Clear timeout on disconnect
-            pcRef.current.addEventListener("iceconnectionstatechange", () => {
-                if (
-                    pcRef.current?.iceConnectionState === "disconnected" ||
-                    pcRef.current?.iceConnectionState === "failed" ||
-                    pcRef.current?.iceConnectionState === "closed"
-                ) {
-                    clearTimeout(timeoutId)
-                }
-            })
-
-            // Set up event handlers for the data channel
+            setLocalStream(stream)
             const handleOpen = () => {
+                clearTimeout(timeout)
+                reportStage("data_channel_open")
                 logClientEvent({}, "data_channel.open")
+                setSessionStatus("CONNECTED")
             }
-
             const handleClose = () => {
-                logClientEvent({}, "data_channel.close")
+                clearTimeout(timeout)
+                setConnectionError("Voice connection closed. Select Connect to start a new session.")
+                disconnectFromRealtime()
             }
-
-            const handleError = (err: any) => {
-                logClientEvent({ error: err }, "data_channel.error")
-                window.elasticApm?.captureError(`  Data channel error: ${err}`)
+            const handleError = () => {
+                clearTimeout(timeout)
+                setConnectionError("Voice connection failed. Check your network and select Connect to retry.")
+                disconnectFromRealtime()
             }
-
-            const handleMessage = (e: MessageEvent) => {
-                handleServerEventRef.current(JSON.parse(e.data))
-            }
-
-            // Attach event listeners to the data channel
             dc.addEventListener("open", handleOpen)
             dc.addEventListener("close", handleClose)
             dc.addEventListener("error", handleError)
-            dc.addEventListener("message", handleMessage)
-
-            // Store handlers for cleanup
-            dcEventHandlersRef.current = {
-                open: handleOpen,
-                close: handleClose,
-                error: handleError,
-                message: handleMessage,
-            }
-
+            pc.addEventListener("connectionstatechange", () => {
+                if (pc.connectionState === "failed") handleError()
+            })
+            dcEventHandlersRef.current = { open: handleOpen, close: handleClose, error: handleError, message: handleMessage }
             setDataChannel(dc)
+            if (dc.readyState === "open") handleOpen()
         } catch (err) {
-            console.error("Error connecting to realtime:", err)
-
-            window.elasticApm?.captureError(`Error connecting to realtime: ${err}`)
-            window.alert("This app needs access to your microphone, Please enable your microphone")
-
-            setSessionStatus("DISCONNECTED")
+            if (connectionAbortRef.current !== controller) return
+            setMicrophoneRequired(awaitingMicrophone())
+            const message = err instanceof DOMException && err.name === "NotAllowedError"
+                ? "Microphone access was denied. Allow microphone access in your browser, then select Connect."
+                : err instanceof Error ? err.message : "Unable to connect to voice. Select Connect to retry."
+            setConnectionError(message)
+            addTranscriptBreadcrumb(`Connection failed: ${message}`)
+            disconnectFromRealtime()
+        } finally {
+            // Keep the timeout until the data channel opens, rather than only until SDP exchange.
+            if (controller.signal.aborted) clearTimeout(timeout)
         }
     }
 
     // Function to disconnect from the realtime service
     const disconnectFromRealtime = () => {
+        handleServerEventRef.current({ type: "session.disconnected" })
+        const pending = connectionAbortRef.current
+        connectionAbortRef.current = null
+        pending?.abort()
+        initializedAgentRef.current = null
+        configuredPTTRef.current = null
+        responseCoordinatorRef.current?.reset()
+        audioPlayingRef.current = false
         try {
             // Clean up event listeners from data channel
             if (dcRef.current && dcEventHandlersRef.current) {
@@ -331,9 +393,15 @@ export function useRealtimeConnection({
                 localStream.getTracks().forEach((track) => track.stop())
             }
 
+            dcRef.current?.close()
+            if (audioElementRef.current) {
+                audioElementRef.current.pause()
+                audioElementRef.current.srcObject = null
+            }
             // Reset state
             setLocalStream(null)
             setRemoteStream(null)
+            setAudioPlaybackBlocked(false)
             setDataChannel(null)
             setSessionStatus("DISCONNECTED")
             setIsPTTUserSpeaking(false)
@@ -352,12 +420,12 @@ export function useRealtimeConnection({
             return
         }
 
-        if (sessionStatus === "CONNECTED" || sessionStatus === "CONNECTING") {
-            manualDisconnectRef.current = true
+        if (sessionStatus === "CONNECTED" || sessionStatus === "CONNECTING" || connectionAbortRef.current) {
+            deliberatelyDisconnectedRef.current = true
             disconnectFromRealtime()
             setSessionStatus("DISCONNECTED")
         } else {
-            manualDisconnectRef.current = false
+            deliberatelyDisconnectedRef.current = false
             connectToRealtime()
         }
     }
@@ -624,12 +692,11 @@ export function useRealtimeConnection({
     }
 
     // Update session configuration
-    const updateSession = (shouldTriggerResponse: boolean = false) => {
+    const updateSession = (shouldTriggerResponse: boolean = false, agentName = selectedAgentName) => {
         updateSessionCounterRef.current++
         console.log(`[SESSION] updateSession with agent: ${selectedAgentName}, trigger: ${shouldTriggerResponse}`)
-        sendClientEvent({ type: "input_audio_buffer.clear" }, "clear audio buffer on session update")
 
-        const currentAgent = selectedAgentConfigSet?.find((a) => a.name === selectedAgentName)
+        const currentAgent = selectedAgentConfigSet?.find((a) => a.name === agentName)
         if (!currentAgent) {
             console.error(`[SESSION] Cannot find agent config for ${selectedAgentName}`)
             window.elasticApm?.captureError(`Cannot find agent config for ${selectedAgentName}`)
@@ -661,8 +728,17 @@ export function useRealtimeConnection({
                   threshold: 0.7,
                   prefix_padding_ms: 300,
                   silence_duration_ms: 500,
-                  create_response: true,
+                  create_response: false,
+                  interrupt_response: false,
               }
+
+        // Agent handoffs must not discard speech being collected by VAD.
+        // Only startup/input-mode changes intentionally discard buffered audio.
+        if (configuredPTTRef.current === null || configuredPTTRef.current !== isPTTActive) {
+            responseCoordinatorRef.current?.discardInput()
+            sendClientEvent({ type: "input_audio_buffer.clear" }, "clear audio buffer on input mode change")
+        }
+        configuredPTTRef.current = isPTTActive
 
         const instructions = currentAgent?.instructions || ""
         const tools = currentAgent?.tools || []
@@ -670,20 +746,22 @@ export function useRealtimeConnection({
         const sessionUpdateEvent = {
             type: "session.update",
             session: {
-                modalities: ["text", "audio"],
+                type: "realtime",
+                output_modalities: ["audio"],
                 instructions,
-                voice: "echo",
-                input_audio_format: "pcm16",
-                output_audio_format: "pcm16",
-                input_audio_transcription: { model: "whisper-1" },
-                turn_detection: turnDetection,
+                audio: {
+                    input: {
+                        transcription: { model: "gpt-4o-mini-transcribe" },
+                        turn_detection: turnDetection,
+                    },
+                },
                 tools,
-                temperature: 0.8,
             },
         }
 
         console.log(`[SESSION] Sending session update for ${selectedAgentName}`)
         sendClientEvent(sessionUpdateEvent)
+        responseCoordinatorRef.current?.flush()
 
         if (shouldTriggerResponse) {
             console.log(`[SESSION] Triggering initial response for ${selectedAgentName}`)
@@ -693,39 +771,12 @@ export function useRealtimeConnection({
         }
     }
 
-    // Cancel assistant speech
-    const cancelAssistantSpeech = async () => {
-        const mostRecentAssistantMessage = [...transcriptItems].reverse().find((item) => item.role === "assistant")
-
-        if (!mostRecentAssistantMessage) {
-            console.warn("can't cancel, no recent assistant message found")
-            return
-        }
-        if (mostRecentAssistantMessage.status === "DONE") {
-            console.log("No truncation needed, message is DONE")
-            return
-        }
-
-        try {
-            sendClientEvent({
-                type: "conversation.item.truncate",
-                item_id: mostRecentAssistantMessage?.itemId,
-                content_index: 0,
-                audio_end_ms: Date.now() - mostRecentAssistantMessage.createdAtMs,
-            })
-
-            // Add a small delay before cancelling the response to ensure proper sequence
-            setTimeout(() => {
-                try {
-                    sendClientEvent({ type: "response.cancel" }, "(cancel due to user interruption)")
-                } catch (error) {
-                    console.warn("Error in delayed response.cancel:", error)
-                    window.elasticApm?.captureError(`Error in delayed response.cancel: ${error}`)
-                }
-            }, 50)
-        } catch (error) {
-            console.warn("Error in cancelAssistantSpeech:", error)
-            window.elasticApm?.captureError(`Error in cancelAssistantSpeech: ${error}`)
+    // WebRTC owns playout timing and truncation; wall-clock message age is not an audio offset.
+    const cancelAssistantSpeech = () => {
+        responseCoordinatorRef.current?.interrupt()
+        if (audioPlayingRef.current) {
+            sendClientEvent({ type: "output_audio_buffer.clear" }, "stop assistant playback")
+            audioPlayingRef.current = false
         }
     }
 
@@ -733,9 +784,11 @@ export function useRealtimeConnection({
     const handleTalkButtonDown = () => {
         if (!isRealtimeVoiceMode) return
         if (sessionStatus !== "CONNECTED" || dataChannel?.readyState !== "open") return
+        responseCoordinatorRef.current?.beginInput()
         cancelAssistantSpeech()
 
         setIsPTTUserSpeaking(true)
+        localStream?.getAudioTracks().forEach((track) => { track.enabled = true })
         sendClientEvent({ type: "input_audio_buffer.clear" }, "clear PTT buffer")
     }
 
@@ -744,9 +797,13 @@ export function useRealtimeConnection({
         if (sessionStatus !== "CONNECTED" || dataChannel?.readyState !== "open" || !isPTTUserSpeaking) return
 
         setIsPTTUserSpeaking(false)
+        localStream?.getAudioTracks().forEach((track) => { track.enabled = false })
         sendClientEvent({ type: "input_audio_buffer.commit" }, "commit PTT")
-        sendClientEvent({ type: "response.create" }, "trigger response PTT")
     }
+
+    useEffect(() => {
+        localStream?.getAudioTracks().forEach((track) => { track.enabled = !isPTTActive || isPTTUserSpeaking })
+    }, [localStream, isPTTActive, isPTTUserSpeaking])
 
     // We use a separate useEffect to initialize from localStorage after component mount
 
@@ -763,69 +820,87 @@ export function useRealtimeConnection({
         }
     }, [isAudioPlaybackEnabled])
 
-    // Handle audio playback settings
+    // Called directly by the Enable audio button so browsers receive a user gesture.
+    const retryAudioPlayback = () => {
+        const audio = audioElementRef.current
+        if (!audio?.srcObject) return
+        audio.autoplay = true
+        setIsAudioPlaybackEnabled(true)
+        void audio.play().then(() => setAudioPlaybackBlocked(false)).catch((err) => {
+            console.warn("Audio playback could not start:", err)
+            if (err instanceof DOMException && err.name === "NotAllowedError") setAudioPlaybackBlocked(true)
+        })
+    }
+
     useEffect(() => {
-        if (audioElementRef.current) {
+        if (audioElementRef.current && remoteStream) {
             if (isAudioPlaybackEnabled) {
-                audioElementRef.current.play().catch((err) => {
-                    console.warn("Autoplay may be blocked by browser:", err)
-                })
+                retryAudioPlayback()
             } else {
                 audioElementRef.current.pause()
+                setAudioPlaybackBlocked(false)
             }
         }
-    }, [isAudioPlaybackEnabled])
+    }, [isAudioPlaybackEnabled, remoteStream])
 
     // Ensure realtime connection is disabled in Agent Builder text mode.
     useEffect(() => {
         if (!isRealtimeVoiceMode && (sessionStatus === "CONNECTED" || sessionStatus === "CONNECTING")) {
-            manualDisconnectRef.current = true
             disconnectFromRealtime()
         }
     }, [isRealtimeVoiceMode, sessionStatus])
 
-    // Auto-connect when selectedAgentName is set
+    // Defer until mount effects and saved mode/agent settings settle. StrictMode
+    // cancels its first scheduled attempt before starting the replayed effect.
     useEffect(() => {
-        if (isRealtimeVoiceMode && selectedAgentName && sessionStatus === "DISCONNECTED" && !manualDisconnectRef.current) {
-            connectToRealtime()
+        if (!isRealtimeVoiceMode) {
+            autoConnectAttemptedRef.current = false
+            return
         }
-        // Reset the manual disconnect flag when status changes to CONNECTED
-        if (sessionStatus === "CONNECTED") {
-            manualDisconnectRef.current = false
-        }
-    }, [selectedAgentName, sessionStatus, isRealtimeVoiceMode])
+        if (!selectedAgentConfigSet?.some((agent) => agent.name === selectedAgentName) || sessionStatus !== "DISCONNECTED") return
+        if (autoConnectAttemptedRef.current || deliberatelyDisconnectedRef.current) return
+        const timer = setTimeout(() => {
+            if (autoConnectAttemptedRef.current || deliberatelyDisconnectedRef.current || connectionAbortRef.current) return
+            void connectToRealtime()
+        }, 0)
+        return () => clearTimeout(timer)
+    }, [isRealtimeVoiceMode, selectedAgentName, selectedAgentConfigSet, sessionStatus])
 
-    // Update session when connected with agent info
-    useEffect(() => {
-        if (isRealtimeVoiceMode && sessionStatus === "CONNECTED" && selectedAgentConfigSet && selectedAgentName) {
-            const currentAgent = selectedAgentConfigSet.find((a) => a.name === selectedAgentName)
-            addTranscriptBreadcrumb(`Agent: ${selectedAgentName}`, currentAgent)
-            updateSession(true)
-        }
-    }, [selectedAgentConfigSet, selectedAgentName, sessionStatus, isRealtimeVoiceMode])
+    // Release media on unmount; a cancelled startup never becomes a retry loop.
+    useEffect(() => () => {
+        handleServerEventRef.current({ type: "session.disconnected" })
+        responseCoordinatorRef.current?.reset()
+        const pending = connectionAbortRef.current
+        connectionAbortRef.current = null
+        pending?.abort()
+        dcRef.current?.close()
+        pcRef.current?.getSenders().forEach((sender) => sender.track?.stop())
+        pcRef.current?.close()
+        if (audioElementRef.current) audioElementRef.current.srcObject = null
+    }, [])
 
-    // Also update session when agent name changes while already connected
+    // Configure once per agent/PTT change. A handoff continues from the tool output instead of injecting "hi".
     useEffect(() => {
-        if (isRealtimeVoiceMode && sessionStatus === "CONNECTED" && selectedAgentName) {
-            console.log(`Agent changed to: ${selectedAgentName} - updating session`)
-            // Use a small delay to ensure state has propagated
-            setTimeout(() => {
-                updateSession(false)
-            }, 50)
+        if (!isRealtimeVoiceMode || sessionStatus !== "CONNECTED" || !selectedAgentConfigSet || !selectedAgentName) return
+        const firstAgent = initializedAgentRef.current === null
+        const agentChanged = initializedAgentRef.current !== selectedAgentName
+        if (agentChanged) addTranscriptBreadcrumb(`Agent: ${selectedAgentName}`)
+        initializedAgentRef.current = selectedAgentName
+        if (handoffConfiguredAgentRef.current === selectedAgentName) {
+            handoffConfiguredAgentRef.current = null
+            return // Already configured synchronously before the introduction response.
         }
-    }, [selectedAgentName, isRealtimeVoiceMode])
-
-    // Update session when PTT status changes
-    useEffect(() => {
-        if (isRealtimeVoiceMode && sessionStatus === "CONNECTED") {
-            console.log(`updatingSession, isPTTActive=${isPTTActive} sessionStatus=${sessionStatus}`)
-            updateSession()
-        }
-    }, [isPTTActive, sessionStatus, isRealtimeVoiceMode])
+        handoffConfiguredAgentRef.current = null
+        updateSession(firstAgent)
+    }, [selectedAgentConfigSet, selectedAgentName, sessionStatus, isRealtimeVoiceMode, isPTTActive])
 
     return {
         // Connection state
         sessionStatus,
+        connectionError,
+        microphoneRequired,
+        audioPlaybackBlocked,
+        retryAudioPlayback,
         localStream,
         remoteStream,
 

@@ -1,3 +1,5 @@
+import { sanitizeTelemetry } from "@/app/lib/telemetry-safety"
+import { InvalidRequestError, readRequestObject } from "@/app/lib/agent-builder-kibana"
 import { NextRequest, NextResponse } from "next/server"
 import { Client } from "@elastic/elasticsearch"
 import { SpanKind, SpanStatusCode, trace } from "@opentelemetry/api"
@@ -71,18 +73,24 @@ function normalizeEventRecord(rawEvent: unknown): EventRecordInput | null {
     }
 
     const eventType =
-        asOptionalString(event.eventType) || asOptionalString(event.event_type) || asOptionalString(event.type) || "unknown"
+        asOptionalString(event.eventType) ||
+        asOptionalString(event.event_type) ||
+        asOptionalString(event.type) ||
+        "unknown"
     const timestamp = asOptionalString(event.timestamp) || new Date().toISOString()
     const role = asOptionalString(event.role)
     const status = asOptionalString(event.status)
     const toolName = asOptionalString(event.toolName) || asOptionalString(event.tool_name)
     const content = asOptionalString(event.content)
-    const latencyMs = asOptionalNumber(event.latencyMs) || asOptionalNumber(event.latency_ms)
+    const latencyMs = asOptionalNumber(event.latencyMs) ?? asOptionalNumber(event.latency_ms)
     const sourceBackend = asOptionalString(event.sourceBackend) || asOptionalString(event.source_backend)
     const mirrorStatus = asOptionalString(event.mirrorStatus) || asOptionalString(event.mirror_status)
     const mappedAgentId = asOptionalString(event.mappedAgentId) || asOptionalString(event.mapped_agent_id)
     const realtimeAgentName = asOptionalString(event.realtimeAgentName) || asOptionalString(event.realtime_agent_name)
-    const rawPayload = asOptionalObject(event.raw) || event
+    const rawPayload = sanitizeTelemetry(
+        asOptionalObject(event.raw) || event,
+        process.env.TELEMETRY_CAPTURE_FULL_CONTENT === "true",
+    ) as Record<string, unknown>
 
     return {
         eventType,
@@ -113,6 +121,8 @@ function resolveElasticClient(): { client: Client; indexName: string } {
     if (!cachedClient) {
         cachedClient = new Client({
             node,
+            requestTimeout: 10000,
+            maxRetries: 0,
             auth: {
                 apiKey,
             },
@@ -122,56 +132,6 @@ function resolveElasticClient(): { client: Client; indexName: string } {
     return {
         client: cachedClient,
         indexName: process.env.AGENT_BUILDER_INDEX_NAME?.trim() || DEFAULT_AGENT_CHAT_INDEX,
-    }
-}
-
-async function ensureIndexExists(client: Client, indexName: string): Promise<void> {
-    const properties: Record<string, any> = {
-        "@timestamp": { type: "date" },
-        app: { type: "keyword" },
-        channel: { type: "keyword" },
-        agent_id: { type: "keyword" },
-        conversation_id: { type: "keyword" },
-        round_id: { type: "keyword" },
-        sequence: { type: "integer" },
-        event_type: { type: "keyword" },
-        role: { type: "keyword" },
-        status: { type: "keyword" },
-        tool_name: { type: "keyword" },
-        source_backend: { type: "keyword" },
-        mirror_status: { type: "keyword" },
-        mapped_agent_id: { type: "keyword" },
-        realtime_agent_name: { type: "keyword" },
-        content: { type: "text" },
-        content_length: { type: "integer" },
-        latency_ms: { type: "long" },
-        raw: { type: "object", enabled: true },
-    }
-
-    const existsResponse = await client.indices.exists({ index: indexName })
-    const exists =
-        typeof existsResponse === "boolean"
-            ? existsResponse
-            : Boolean((existsResponse as { body?: boolean }).body)
-
-    try {
-        if (!exists) {
-            await client.indices.create({
-                index: indexName,
-                mappings: { properties },
-            })
-            return
-        }
-
-        await client.indices.putMapping({
-            index: indexName,
-            properties,
-        })
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        if (!message.includes("resource_already_exists_exception")) {
-            throw error
-        }
     }
 }
 
@@ -187,7 +147,7 @@ export async function POST(req: NextRequest) {
     })
 
     try {
-        const body = (await req.json()) as PersistRouteBody
+        const body = (await readRequestObject(req)) as PersistRouteBody
         const conversationId = asRequiredString(body.conversationId)
         const agentId = asRequiredString(body.agentId)
         const roundId = asRequiredString(body.roundId)
@@ -211,6 +171,8 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Missing required `events` array." }, { status: 400 })
         }
 
+        if (body.events.length > 100) throw new InvalidRequestError("At most 100 events are allowed per request.", 413)
+
         const normalizedEvents = body.events.map((event) => normalizeEventRecord(event)).filter((event) => !!event)
 
         if (normalizedEvents.length === 0) {
@@ -221,7 +183,6 @@ export async function POST(req: NextRequest) {
         }
 
         const { client, indexName } = resolveElasticClient()
-        await ensureIndexExists(client, indexName)
 
         const operations: Array<Record<string, unknown>> = []
 
@@ -231,10 +192,12 @@ export async function POST(req: NextRequest) {
             }
 
             const timestamp = new Date(event.timestamp)
-            const normalizedTimestamp = Number.isNaN(timestamp.valueOf()) ? new Date().toISOString() : timestamp.toISOString()
+            const normalizedTimestamp = Number.isNaN(timestamp.valueOf())
+                ? new Date().toISOString()
+                : timestamp.toISOString()
 
             operations.push({
-                index: {
+                create: {
                     _index: indexName,
                 },
             })
@@ -255,7 +218,9 @@ export async function POST(req: NextRequest) {
                 ...(event.mirrorStatus ? { mirror_status: event.mirrorStatus } : {}),
                 ...(event.mappedAgentId ? { mapped_agent_id: event.mappedAgentId } : {}),
                 ...(event.realtimeAgentName ? { realtime_agent_name: event.realtimeAgentName } : {}),
-                ...(event.content ? { content: event.content } : {}),
+                ...(event.content && process.env.TELEMETRY_CAPTURE_FULL_CONTENT === "true"
+                    ? { content: sanitizeTelemetry(event.content, true) }
+                    : {}),
                 ...(event.content ? { content_length: event.content.length } : {}),
                 ...(typeof event.latencyMs === "number" ? { latency_ms: event.latencyMs } : {}),
                 raw: event.raw,
@@ -264,7 +229,6 @@ export async function POST(req: NextRequest) {
 
         const bulkResponse = await client.bulk({
             operations,
-            refresh: true,
         })
 
         const items = (bulkResponse as any).items as any[] | undefined
@@ -273,7 +237,7 @@ export async function POST(req: NextRequest) {
         let failed = 0
         if (errors && Array.isArray(items)) {
             for (const item of items) {
-                const entry = item?.index
+                const entry = item?.create
                 if (entry?.error) {
                     failed += 1
                 }
@@ -295,15 +259,14 @@ export async function POST(req: NextRequest) {
         }
 
         span.end()
-        return NextResponse.json({ accepted, failed })
+        return NextResponse.json({ accepted, failed }, { status: failed ? 502 : 200 })
     } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to persist Agent Builder events"
+        const message = error instanceof InvalidRequestError ? error.message : "Event persistence is unavailable."
         span.setStatus({ code: SpanStatusCode.ERROR, message })
-        if (error instanceof Error) {
-            span.recordException(error)
-        }
         span.end()
-        return NextResponse.json({ error: message }, { status: 500 })
+        return NextResponse.json(
+            { error: message },
+            { status: error instanceof InvalidRequestError ? error.status : 503 },
+        )
     }
 }
-
