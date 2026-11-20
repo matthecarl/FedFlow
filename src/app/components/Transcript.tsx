@@ -14,14 +14,16 @@ export interface TranscriptProps {
     canSend: boolean
     conversationMode?: ConversationMode
     sessionStatus?: SessionStatus
+    prompts?: readonly { label: string; question: string }[]
 }
 
-function Transcript({ userText, setUserText, onSendMessage, canSend, conversationMode = "realtime_voice_mirror", sessionStatus = "DISCONNECTED" }: TranscriptProps) {
+function Transcript({ userText, setUserText, onSendMessage, canSend, conversationMode = "realtime_voice_mirror", sessionStatus = "DISCONNECTED", prompts }: TranscriptProps) {
     const { transcriptItems, toggleTranscriptItemExpand } = useTranscript()
     const transcriptRef = useRef<HTMLDivElement | null>(null)
     const [prevLogs, setPrevLogs] = useState<TranscriptItem[]>([])
     const [justCopied, setJustCopied] = useState(false)
     const inputRef = useRef<HTMLInputElement | null>(null)
+    const hasCallerTurn = transcriptItems.some((item) => item.type === "MESSAGE" && item.role === "user" && !item.isHidden && item.status === "DONE")
 
     function scrollToBottom() {
         if (transcriptRef.current) {
@@ -70,11 +72,9 @@ function Transcript({ userText, setUserText, onSendMessage, canSend, conversatio
                 <div ref={transcriptRef} className="transcript-scroll" role="log" aria-label="Conversation transcript">
                     {!transcriptItems.some((item) => !item.isHidden) && (
                         <div className="conversation-empty">
-                            <p className="eyebrow">OpenAI Realtime + Elastic</p>
-                            <h1>One conversation.<br /><span>The right specialist.</span></h1>
-                            <p className="empty-description">Ask a question. Move between specialists without starting over. Each agent uses its own knowledge base to find relevant information and ground its answers.</p>
-                            <p className="empty-connection" role="status">{conversationMode === "agent_builder_text" ? "Type a question below to begin." : sessionStatus === "CONNECTING" ? "Connecting automatically. Allow microphone access when asked." : sessionStatus === "CONNECTED" ? "You’re connected. Ask your first question out loud." : "We connect automatically when you arrive. Allow your microphone to begin, or reconnect below if you paused."}</p>
-                            <div className="example-question"><span>Try asking</span><q>Are RSUs taxable?</q><p>Then change topics. Your question and context go with you.</p></div>
+                            <h1>{prompts ? <>Elastic support,<br /><span>by voice.</span></> : "Ask a specialist"}</h1>
+                            {prompts && <p className="empty-description">Talk through an issue, then use the conversation to draft a cited handoff for the next engineer.</p>}
+                            <p className="empty-connection" role="status">{conversationMode === "agent_builder_text" ? "Type a question below to begin." : sessionStatus === "CONNECTING" ? "Allow microphone access when asked." : sessionStatus === "CONNECTED" ? "You’re connected. Ask your first question out loud." : "Select Connect to start a call."}</p>
                         </div>
                     )}
                     {transcriptItems.map((item) => {
@@ -190,6 +190,19 @@ function Transcript({ userText, setUserText, onSendMessage, canSend, conversatio
                 </div>
             </div>
 
+            {prompts && !hasCallerTurn && (
+                <div className="support-prompts" role="group" aria-label="Example support questions">
+                    <span className="text-xs font-semibold text-slate-600">Try asking</span>
+                    {prompts.map(({ label, question }) => (
+                        <button key={question} type="button" className="btn btn-soft" aria-label={question} title={question} onClick={() => {
+                            setUserText(question)
+                            if (canSend) inputRef.current?.focus()
+                        }}>
+                            {label}
+                        </button>
+                    ))}
+                </div>
+            )}
             <div className="message-composer">
                 <input
                     ref={inputRef}
@@ -201,7 +214,7 @@ function Transcript({ userText, setUserText, onSendMessage, canSend, conversatio
                     }}
                     className="control min-w-0 flex-1"
                     aria-label="Message"
-                    placeholder={canSend ? "Type a question or follow up…" : sessionStatus === "CONNECTING" ? "Connecting your microphone…" : "Reconnect to continue…"}
+                    placeholder={canSend ? "Type a question or follow up…" : sessionStatus === "CONNECTING" ? "Connecting your microphone…" : "Connect to send…"}
                 />
                 <button
                     onClick={onSendMessage}

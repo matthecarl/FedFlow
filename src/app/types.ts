@@ -147,6 +147,7 @@ export interface UseRealtimeConnectionProps {
     setSelectedAgentName: (name: string) => void
     selectedAgentConfigSet: AgentConfig[] | null
     conversationMode: ConversationMode
+    autoConnect?: boolean
 }
 
 /**

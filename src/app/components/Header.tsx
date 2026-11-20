@@ -20,8 +20,7 @@ export function Header({ agentSetKey, selectedAgentName, selectedAgentConfigSet,
                         <Image src="/elastic-glyph.svg" alt="Elastic" width={28} height={28} />
                     </button>
                     <div className="min-w-0">
-                        <div className="font-mierb text-lg leading-tight">FedFlow <span className="brand-caption">/ Realtime agents</span></div>
-                        <p className="brand-subtitle">One conversation. The right specialist.</p>
+                        <div className="font-mierb text-lg leading-tight">FedFlow <span className="brand-caption">/ Support desk</span></div>
                     </div>
                 </div>
                 {agentSetKey && (

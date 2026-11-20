@@ -613,6 +613,7 @@ export function useHandleServerEvent({
 
             // Add to transcript
             addTranscriptMessage(itemId, role, displayText)
+            if (role === "user" && text) updateTranscriptItemStatus(itemId, "DONE")
         }
     }
 
@@ -629,6 +630,7 @@ export function useHandleServerEvent({
 
         // Replace placeholder with final transcript (false = replace, not append)
         updateTranscriptMessage(itemId, finalTranscript, false)
+        updateTranscriptItemStatus(itemId, "DONE")
 
         // Record user transcript for telemetry
         recordUserTranscript(event)

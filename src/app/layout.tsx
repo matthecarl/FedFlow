@@ -6,12 +6,12 @@ import { FullStoryScript } from "./components/fullstory-script"
 export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", interactiveWidget: "resizes-content" }
 
 export const metadata: Metadata = {
-    title: "Elastic Realtime Agents",
+    title: "FedFlow | Voice support desk",
     description:
-        "A voice conversation across specialized agents, grounded in Elastic knowledge bases and powered by OpenAI Realtime.",
+        "Talk through an Elastic support question and draft a cited handoff for the next engineer.",
     openGraph: {
-        title: "Elastic Realtime Agents",
-        description: "Speak naturally. Retrieve relevant sources. Hear answers grounded in your data.",
+        title: "FedFlow | Voice support desk",
+        description: "Turn an Elastic support call into a draft handoff with sources.",
         images: ["https://www.elastic.co/static-res/images/social_media_default.png"],
     },
 }

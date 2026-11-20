@@ -3,6 +3,7 @@ import Transcript from "./Transcript"
 import Events from "./Events"
 import AudioDancerComponent from "./AudioDancerComponent"
 import { ConversationMode, SessionStatus } from "@/app/types"
+import { supportPrompts } from "@/app/hooks/useSupportHandoff"
 
 interface MainProps {
     userText: string
@@ -15,6 +16,11 @@ interface MainProps {
     sessionStatus: SessionStatus
     selectedAgentName: string
     conversationMode: ConversationMode
+    canDraftHandoff: boolean
+    hasHandoffRun: boolean
+    onDraftHandoff: () => void
+    onViewHandoff: () => void
+    onSampleCall: () => void
 }
 
 export function Main({
@@ -28,6 +34,11 @@ export function Main({
     sessionStatus,
     selectedAgentName,
     conversationMode,
+    canDraftHandoff,
+    hasHandoffRun,
+    onDraftHandoff,
+    onViewHandoff,
+    onSampleCall,
 }: MainProps) {
     const isVoice = conversationMode === "realtime_voice_mirror"
     const sessionLabel = !isVoice ? "Text conversation" : sessionStatus === "CONNECTED" ? "Live conversation" : sessionStatus === "CONNECTING" ? "Connecting your microphone…" : "Session paused"
@@ -43,11 +54,17 @@ export function Main({
                     </span>
                     <span className="agent-badge">{!selectedAgentName || selectedAgentName === "greeter" ? "Your guide" : `${selectedAgentName} specialist`}</span>
                 </div>
-                <div className="session-visual" aria-hidden="true">
-                    <span>One conversation. Connected specialists.</span>
-                    <div className="session-glyph">
-                        <AudioDancerComponent localStream={localStream} remoteStream={remoteStream} isMobile={true} />
+                <div className="handoff-actions" role="group" aria-label="Support handoff actions">
+                    <div className="session-visual" aria-hidden="true">
+                        <div className="session-glyph">
+                            <AudioDancerComponent localStream={localStream} remoteStream={remoteStream} isMobile={true} />
+                        </div>
                     </div>
+                    <button type="button" className="btn btn-soft" onClick={onSampleCall}>Try sample call</button>
+                    {hasHandoffRun && <button type="button" className="btn btn-soft" onClick={onViewHandoff}>View handoff</button>}
+                    {isVoice && selectedAgentName === "Elastic" && (
+                        <button type="button" className="btn btn-neutral" onClick={onDraftHandoff} disabled={!canDraftHandoff}>Draft handoff</button>
+                    )}
                 </div>
             </div>
             <div className={`workspace-panels${isEventsPaneExpanded ? " with-events" : ""}`}>
@@ -58,6 +75,7 @@ export function Main({
                     canSend={canSend}
                     conversationMode={conversationMode}
                     sessionStatus={sessionStatus}
+                    prompts={isVoice && selectedAgentName === "Elastic" ? supportPrompts : undefined}
                 />
                 {isEventsPaneExpanded && <Events isExpanded={true} />}
             </div>

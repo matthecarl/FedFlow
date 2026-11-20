@@ -8,11 +8,14 @@ import { Header } from "./components/Header"
 import { Main } from "./components/Main"
 import BottomToolbar from "./components/BottomToolbar"
 import MicrophoneRequiredDialog from "./components/MicrophoneRequiredDialog"
+import { SupportHandoffDialog } from "./components/SupportHandoffDialog"
 
 // Custom hooks
 import { useAgentSelection } from "./hooks/useAgentSelection"
 import { useRealtimeConnection } from "./hooks/useRealtimeConnection"
 import { useEventsPaneState } from "./hooks/useEventsPaneState"
+import { useSupportHandoff } from "./hooks/useSupportHandoff"
+import { useTranscript } from "./contexts/TranscriptContext"
 import { ConversationMode } from "./types"
 
 // Loading component for Suspense
@@ -73,6 +76,8 @@ function Logic() {
         useAgentSelection()
 
     const { isEventsPaneExpanded, setIsEventsPaneExpanded } = useEventsPaneState()
+    const { transcriptItems } = useTranscript()
+    const handoff = useSupportHandoff(transcriptItems)
 
     const {
         sessionStatus,
@@ -99,6 +104,7 @@ function Logic() {
         setSelectedAgentName,
         selectedAgentConfigSet,
         conversationMode,
+        autoConnect: false,
     })
 
     return (
@@ -112,9 +118,10 @@ function Logic() {
                 onConversationModeChange={setConversationMode}
             />
 
-            {microphoneRequired && conversationMode === "realtime_voice_mirror" && (
-                <MicrophoneRequiredDialog onRetry={onToggleConnection} />
+            {microphoneRequired && conversationMode === "realtime_voice_mirror" && !handoff.open && (
+                <MicrophoneRequiredDialog onRetry={onToggleConnection} onSample={handoff.openSample} />
             )}
+            <SupportHandoffDialog handoff={handoff} />
 
             {audioPlaybackBlocked && (
                 <div className="app-container app-alert" role="status">
@@ -148,6 +155,11 @@ function Logic() {
                 sessionStatus={sessionStatus}
                 selectedAgentName={selectedAgentName}
                 conversationMode={conversationMode}
+                canDraftHandoff={selectedAgentName === "Elastic" && conversationMode === "realtime_voice_mirror" && handoff.canDraft}
+                hasHandoffRun={handoff.hasRun}
+                onDraftHandoff={handoff.openCall}
+                onViewHandoff={handoff.view}
+                onSampleCall={handoff.openSample}
             />
 
             <BottomToolbar

@@ -15,6 +15,7 @@ export function useRealtimeConnection({
     setSelectedAgentName,
     selectedAgentConfigSet,
     conversationMode,
+    autoConnect = true,
 }: UseRealtimeConnectionProps) {
     const [sessionStatus, setSessionStatus] = useState<SessionStatus>("DISCONNECTED")
     const [connectionError, setConnectionError] = useState<string | null>(null)
@@ -853,6 +854,7 @@ export function useRealtimeConnection({
     // Defer until mount effects and saved mode/agent settings settle. StrictMode
     // cancels its first scheduled attempt before starting the replayed effect.
     useEffect(() => {
+        if (!autoConnect) return
         if (!isRealtimeVoiceMode) {
             autoConnectAttemptedRef.current = false
             return
@@ -864,7 +866,7 @@ export function useRealtimeConnection({
             void connectToRealtime()
         }, 0)
         return () => clearTimeout(timer)
-    }, [isRealtimeVoiceMode, selectedAgentName, selectedAgentConfigSet, sessionStatus])
+    }, [autoConnect, isRealtimeVoiceMode, selectedAgentName, selectedAgentConfigSet, sessionStatus])
 
     // Release media on unmount; a cancelled startup never becomes a retry loop.
     useEffect(() => () => {

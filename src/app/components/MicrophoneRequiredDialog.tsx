@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react"
 
-export default function MicrophoneRequiredDialog({ onRetry }: { onRetry: () => void }) {
+export default function MicrophoneRequiredDialog({ onRetry, onSample }: { onRetry: () => void; onSample: () => void }) {
     const dialogRef = useRef<HTMLDialogElement>(null)
 
     useEffect(() => {
@@ -32,24 +32,22 @@ export default function MicrophoneRequiredDialog({ onRetry }: { onRetry: () => v
         >
             <p className="text-sm font-bold uppercase tracking-widest text-red-700">Microphone access required</p>
             <h1 id="microphone-required-title" className="mt-3 text-3xl font-bold leading-tight sm:text-4xl">
-                Enable your microphone to use this app.
+                Enable your microphone for the call.
             </h1>
             <p id="microphone-required-description" className="mt-5 text-lg leading-relaxed">
-                This voice application cannot connect or work without microphone access—even if you want to type your messages.
+                Realtime calls need microphone access, including when you type into the call. You can draft a handoff from a sample call without it.
             </p>
             <ol className="mt-6 list-decimal space-y-3 pl-6 text-base leading-relaxed">
                 <li>If a microphone permission prompt is open, choose <strong>Allow</strong>.</li>
                 <li>If you blocked access, open this site&apos;s permissions in your browser and set <strong>Microphone</strong> to <strong>Allow</strong>. Also allow microphone access for your browser in your device settings.</li>
-                <li>Refresh this page. The app connects automatically; allow microphone access when asked.</li>
+                <li>Reconnect below, then allow microphone access when asked.</li>
             </ol>
             <p className="mt-5 text-sm text-slate-600">Refreshing alone does not clear a saved denial. If access is already allowed, check that a microphone is connected and available.</p>
             <div className="mt-8 flex flex-col gap-3">
-                <button className="btn btn-primary w-full justify-center" onClick={() => window.location.reload()}>
-                    Refresh and try again
-                </button>
-                <button className="btn btn-soft w-full justify-center" onClick={onRetry}>
+                <button className="btn btn-primary w-full justify-center" onClick={onRetry}>
                     I&apos;ve enabled my microphone — reconnect
                 </button>
+                <button className="btn btn-soft w-full justify-center" onClick={onSample}>Try sample call</button>
             </div>
         </dialog>
     )

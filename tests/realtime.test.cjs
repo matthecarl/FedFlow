@@ -107,6 +107,7 @@ function eventFixture(telemetryOverrides = {}, transcriptItems = []) {
     const sent = []
     const updates = []
     const messages = []
+    const statuses = []
     const telemetry = Object.fromEntries(["recordServerEvent", "recordTokenUsage", "recordToolCall", "recordResponseDoneDetails", "recordFullTranscript", "recordUserTranscript"].map(name => [name, () => {}]))
     Object.assign(telemetry, telemetryOverrides)
     const api = load("src/app/hooks/useHandleServerEvent.ts", {
@@ -114,7 +115,7 @@ function eventFixture(telemetryOverrides = {}, transcriptItems = []) {
             react: { useRef: current => ({ current }) },
             "@/app/contexts/TranscriptContext": { useTranscript: () => ({
                 transcriptItems, addTranscriptBreadcrumb() {}, addTranscriptMessage: (...args) => messages.push(args),
-                updateTranscriptMessage: (...args) => updates.push(args), updateTranscriptItemStatus() {},
+                updateTranscriptMessage: (...args) => updates.push(args), updateTranscriptItemStatus: (...args) => statuses.push(args),
             }) },
             "@/app/contexts/EventContext": { useEvent: () => ({ logServerEvent() {} }) },
             "@/app/lib/client-telemetry": telemetry,
@@ -129,7 +130,7 @@ function eventFixture(telemetryOverrides = {}, transcriptItems = []) {
         setSelectedAgentName() {},
         mirrorTurn: async () => ({}),
     }).current
-    return { handler, sent, updates, messages }
+    return { handler, sent, updates, messages, statuses }
 }
 
 test("current conversation and audio transcript events populate the UI", () => {
@@ -138,6 +139,16 @@ test("current conversation and audio transcript events populate the UI", () => {
     handler({ type: "response.output_audio_transcript.delta", item_id: "item", delta: "Hello" })
     assert.deepEqual(messages, [["item", "assistant", ""]])
     assert.deepEqual(updates, [["item", "Hello", true]])
+})
+
+test("a caller turn is eligible for a handoff only once its voice transcript is final", () => {
+    const { handler, messages, updates, statuses } = eventFixture()
+    handler({ type: "conversation.item.added", item: { id: "caller", role: "user", type: "message", content: [] } })
+    assert.deepEqual(messages, [["caller", "user", "[Transcribing...]"]])
+    assert.deepEqual(statuses, [])
+    handler({ type: "conversation.item.input_audio_transcription.completed", item_id: "caller", transcript: "How does reciprocal rank fusion work?" })
+    assert.deepEqual(updates, [["caller", "How does reciprocal rank fusion work?", false]])
+    assert.deepEqual(statuses, [["caller", "DONE"]])
 })
 
 test("handoff configures destination before submitting tool output and continuing once", () => {
@@ -440,7 +451,7 @@ function automaticConnectionFixture({ fail = false, mode = "realtime_voice_mirro
         render() {
             refIndex = 0; stateIndex = 0; effects.length = 0
             const hook = api.useRealtimeConnection(props)
-            const auto = effects.find(({ deps }) => deps?.length === 4 && typeof deps[0] === "boolean").effect
+            const auto = effects.find(({ deps }) => deps?.length === 5 && typeof deps[0] === "boolean").effect
             return { hook, auto }
         },
         runScheduledStart() {
@@ -468,6 +479,17 @@ test("automatic connection survives StrictMode effect replay without duplicate s
     assert.equal(current.hook.sessionStatus, "DISCONNECTED")
     current.auto()
     fixture.runScheduledStart()
+    assert.equal(fixture.requests(), 1)
+})
+
+test("manual voice mode waits for Connect so reviewers can use the sample without a microphone", () => {
+    const fixture = automaticConnectionFixture()
+    fixture.props.autoConnect = false
+    const current = fixture.render()
+    current.auto()
+    fixture.runScheduledStart()
+    assert.equal(fixture.requests(), 0)
+    current.hook.onToggleConnection()
     assert.equal(fixture.requests(), 1)
 })
 

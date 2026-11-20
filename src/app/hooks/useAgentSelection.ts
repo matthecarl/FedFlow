@@ -41,8 +41,7 @@ export function useAgentSelection() {
             finalAgentConfig = defaultAgentSetKey
             const url = new URL(window.location.toString())
             url.searchParams.set("agentConfig", finalAgentConfig)
-            window.location.replace(url.toString())
-            return
+            window.history.replaceState(null, "", url.toString())
         }
 
         const agents = allAgentSets[finalAgentConfig]
@@ -68,7 +67,7 @@ export function useAgentSelection() {
         setSelectedAgentName(newAgentName)
     }
 
-    const agentSetKey = searchParams?.get("agentConfig") || "default"
+    const agentSetKey = searchParams?.get("agentConfig") || defaultAgentSetKey
 
     return {
         selectedAgentName,
