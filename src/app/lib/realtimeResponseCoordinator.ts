@@ -34,7 +34,11 @@ export class RealtimeResponseCoordinator {
     beginInput(interruptPlayback = true) {
         this.inputPending = true
         if (interruptPlayback) this.interrupt()
-        else if (this.active) this.active.supersededByVoice = true
+        else this.noteNewSpeech()
+    }
+
+    noteNewSpeech() {
+        if (this.active) this.active.supersededByVoice = true
     }
 
     discardInput() {

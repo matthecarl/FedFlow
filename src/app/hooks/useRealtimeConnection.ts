@@ -2,6 +2,7 @@ import { useRef, useState, useEffect } from "react"
 import { v4 as uuidv4 } from "uuid"
 import { ServerEvent, SessionStatus, UseRealtimeConnectionProps, VoiceHandoffContext } from "@/app/types"
 import { createRealtimeConnection, RealtimeConnectionStage } from "@/app/lib/realtimeConnection"
+import type { WebRtcMicrophoneGate } from "@/app/lib/webrtcMicrophoneGate"
 import { useTranscript } from "@/app/contexts/TranscriptContext"
 import { useEvent } from "@/app/contexts/EventContext"
 import { useHandleServerEvent } from "./useHandleServerEvent"
@@ -43,7 +44,9 @@ export function useRealtimeConnection({
         active: new Set<string>(),
         ended: new Map<string, "stopped" | "cleared">(),
         deadlines: new Map<string, ReturnType<typeof setTimeout>>(),
+        generating: null as { eventId: string; responseId?: string } | null,
     })
+    const directMicrophoneRef = useRef<WebRtcMicrophoneGate | null>(null)
     const pendingSwitchRef = useRef<DeferredVoiceSwitch | null>(null)
     const [isVoiceSwitchPending, setIsVoiceSwitchPending] = useState(false)
     const gatewayRef = useRef<GatewayRealtimeTransport | null>(null)
@@ -199,8 +202,14 @@ export function useRealtimeConnection({
             direct.active.delete(responseId)
             rememberDirectPlaybackEnd(responseId, "cleared")
             logClientEvent({ type: "audio.drain_timeout", responseId })
+            releaseDirectMicrophoneIfDrained()
             responseCoordinatorRef.current?.flush()
         }, VOICE_DRAIN_TIMEOUT_MS))
+    }
+
+    function releaseDirectMicrophoneIfDrained() {
+        const { active, generating } = directPlaybackRef.current
+        if (!generating && active.size === 0) directMicrophoneRef.current?.release()
     }
 
     function resetDirectPlayback() {
@@ -209,6 +218,7 @@ export function useRealtimeConnection({
         deadlines.clear()
         active.clear()
         ended.clear()
+        directPlaybackRef.current.generating = null
     }
 
     // Function to send events to the client
@@ -255,14 +265,24 @@ export function useRealtimeConnection({
 
                 // Send the event via data channel
                 if (gatewayRef.current) gatewayRef.current.send(eventObj)
-                else dcRef.current?.send(JSON.stringify(eventObj))
+                else {
+                    if (eventObj.type === "response.create") {
+                        directPlaybackRef.current.generating = { eventId: eventObj.event_id }
+                        if (configuredPTTRef.current !== true) directMicrophoneRef.current?.hold()
+                    }
+                    dcRef.current?.send(JSON.stringify(eventObj))
+                }
                 if (eventObj.type === "conversation.item.create" && eventObj.item?.type === "function_call_output") {
                     responseCoordinatorRef.current?.toolOutputSent(eventObj.item.call_id)
                 }
             } catch (error) {
                 window.elasticApm?.captureError(`Failed to send message: ${error}`)
                 console.error("Failed to send message", error)
-                if (eventObj.type === "response.create") responseCoordinatorRef.current?.reset()
+                if (eventObj.type === "response.create") {
+                    directPlaybackRef.current.generating = null
+                    releaseDirectMicrophoneIfDrained()
+                    responseCoordinatorRef.current?.reset()
+                }
             }
         } else {
             logClientEvent({ attemptedEvent: eventObj.type }, "error.data_channel_not_open")
@@ -327,11 +347,18 @@ export function useRealtimeConnection({
                     // dropping the assistant audio to guess the caller's intent.
                     if (route?.transport !== "gateway") responseCoordinatorRef.current?.beginInput(false)
                 }
-                if (message.type === "response.done" && route?.transport !== "gateway") {
-                    trackCompletedDirectReply(message.response)
+                const direct = directPlaybackRef.current
+                if (route?.transport !== "gateway") {
+                    if (message.type === "response.created" && direct.generating) {
+                        direct.generating.responseId = message.response.id
+                    } else if (message.type === "response.done") {
+                        if (direct.generating && direct.generating.responseId === message.response.id) direct.generating = null
+                        trackCompletedDirectReply(message.response)
+                    } else if (message.type === "error" && direct.generating?.eventId === message.error?.event_id) {
+                        direct.generating = null
+                    }
                 }
                 const responseSupersededByVoice = responseCoordinatorRef.current?.receive(message)
-                const direct = directPlaybackRef.current
                 const audioId = typeof message.response_id === "string" ? message.response_id : ""
                 if (message.type === "output_audio_buffer.started") {
                     if (!direct.ended.has(audioId)) direct.active.add(audioId)
@@ -353,6 +380,10 @@ export function useRealtimeConnection({
                     setConnectionError("Voice replies overlapped. Select Connect to start a fresh session.")
                     disconnectFromRealtime()
                     return
+                }
+                if (route?.transport !== "gateway" &&
+                    ["response.done", "output_audio_buffer.stopped", "output_audio_buffer.cleared", "error"].includes(message.type)) {
+                    releaseDirectMicrophoneIfDrained()
                 }
                 responseCoordinatorRef.current?.flush()
             } catch {
@@ -442,10 +473,18 @@ export function useRealtimeConnection({
                     logClientEvent({}, "error.invalid_server_event")
                 }
             }
-            const { pc, dc, localStream: stream } = await createRealtimeConnection(
+            const { pc, dc, localStream: stream, microphone } = await createRealtimeConnection(
                 data.value, audioElementRef, data.model, controller.signal, handleMessage, setRemoteStream, reportStage,
+                () => {
+                    if (controller.signal.aborted || configuredPTTRef.current === true) return
+                    responseCoordinatorRef.current?.noteNewSpeech()
+                    if (pendingSwitchRef.current && !pendingSwitchRef.current.manual) {
+                        cancelPendingVoiceSwitch("The caller began a new turn during the outgoing reply.")
+                    }
+                },
             )
             controller.signal.throwIfAborted()
+            directMicrophoneRef.current = microphone
             pcRef.current = pc
             dcRef.current = dc
             setLocalStream(stream)
@@ -481,6 +520,8 @@ export function useRealtimeConnection({
         connectionAbortRef.current = null
         pending?.abort()
         routeAgentRef.current = null
+        directMicrophoneRef.current?.close()
+        directMicrophoneRef.current = null
         gatewayRef.current?.close()
         gatewayRef.current = null
         gatewayStreamRef.current?.getTracks().forEach((track) => track.stop())
@@ -645,6 +686,8 @@ export function useRealtimeConnection({
         if (configuredPTTRef.current === null || configuredPTTRef.current !== isPTTActive) {
             responseCoordinatorRef.current?.discardInput()
             sendClientEvent({ type: "input_audio_buffer.clear" }, "clear audio buffer on input mode change")
+            if (isPTTActive) directMicrophoneRef.current?.release(true)
+            else if (directPlaybackRef.current.generating || directPlaybackRef.current.active.size) directMicrophoneRef.current?.hold()
         }
         configuredPTTRef.current = isPTTActive
 
@@ -683,6 +726,8 @@ export function useRealtimeConnection({
     const cancelAssistantSpeech = () => {
         cancelPendingVoiceSwitch(CALLER_INTERRUPTED)
         if (gatewayRef.current) gatewayRef.current.stopPlayback()
+        directPlaybackRef.current.generating = null
+        directMicrophoneRef.current?.release(true)
         responseCoordinatorRef.current?.interrupt()
         const active = directPlaybackRef.current.active
         if (active.size > 0) {
@@ -798,6 +843,8 @@ export function useRealtimeConnection({
         const pending = connectionAbortRef.current
         connectionAbortRef.current = null
         pending?.abort()
+        directMicrophoneRef.current?.close()
+        directMicrophoneRef.current = null
         gatewayRef.current?.close()
         gatewayStreamRef.current?.getTracks().forEach((track) => track.stop())
         dcRef.current?.close()

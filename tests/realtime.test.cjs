@@ -53,10 +53,11 @@ test("missing key avoids OpenAI requests and upstream failures retain HTTP statu
 })
 
 function webRtcFixture({ fetch, getUserMedia } = {}) {
-    const state = { stopped: 0, closed: 0, listenerAttached: false, stages: [] }
+    const state = { stopped: 0, closed: 0, gateClosed: 0, listenerAttached: false, stages: [] }
     const stream = { getTracks: () => [{ stop() { state.stopped++ } }] }
+    const outgoingTrack = { kind: "audio" }
     class Peer {
-        addTrack() {}
+        addTrack(track) { state.outgoingTrack = track }
         createDataChannel() { return { addEventListener(type) { if (type === "message") state.listenerAttached = true } } }
         async createOffer() { return { sdp: "offer" } }
         async setLocalDescription() {}
@@ -64,7 +65,16 @@ function webRtcFixture({ fetch, getUserMedia } = {}) {
         close() { state.closed++ }
     }
     const api = load("src/app/lib/realtimeConnection.ts", {
-        dependencies: { "./client-telemetry": { recordRealtimeFetch() {} }, "./semconv": {} },
+        dependencies: {
+            "./client-telemetry": { recordRealtimeFetch() {} },
+            "./semconv": {},
+            "./webrtcMicrophoneGate": {
+                createWebRtcMicrophoneGate: async (source) => {
+                    assert.equal(source, stream)
+                    return { track: outgoingTrack, close() { state.gateClosed++ } }
+                },
+            },
+        },
         globals: {
             window: {},
             navigator: { mediaDevices: { getUserMedia: getUserMedia || (async () => stream) } },
@@ -75,16 +85,18 @@ function webRtcFixture({ fetch, getUserMedia } = {}) {
             }),
         },
     })
-    return { state, stream, connect: (signal = new AbortController().signal) => api.createRealtimeConnection("ephemeral-test", { current: null }, "test-model", signal, () => {}, () => {}, stage => state.stages.push(stage)) }
+    return { state, stream, outgoingTrack, connect: (signal = new AbortController().signal) => api.createRealtimeConnection("ephemeral-test", { current: null }, "test-model", signal, () => {}, () => {}, stage => state.stages.push(stage)) }
 }
 
 test("WebRTC sends SDP to calls and installs event handling before remote session starts", async () => {
-    const { connect, state } = webRtcFixture()
-    await connect()
+    const { connect, state, stream, outgoingTrack } = webRtcFixture()
+    const connection = await connect()
     assert.equal(state.request.url, "https://api.openai.com/v1/realtime/calls")
     assert.equal(state.request.headers["Content-Type"], "application/sdp")
     assert.equal(state.request.body, "offer")
     assert.equal(state.closed, 0)
+    assert.equal(state.outgoingTrack, outgoingTrack)
+    assert.equal(connection.localStream, stream)
     assert.deepEqual(state.stages, ["requesting_microphone", "microphone_received", "exchanging_sdp", "answer_received", "waiting_for_data_channel"])
 })
 
@@ -93,6 +105,7 @@ test("upstream WebRTC errors release microphone tracks and close the peer", asyn
     await assert.rejects(connect(), /Quota exceeded/)
     assert.equal(state.stopped, 1)
     assert.equal(state.closed, 1)
+    assert.equal(state.gateClosed, 1)
 })
 
 test("cancelling while microphone permission is pending releases the late-acquired stream", async () => {
@@ -412,6 +425,7 @@ test("typed input waits for greeting cancellation acknowledgement before creatin
             "@/app/lib/realtimeConnection": { createRealtimeConnection: async (...args) => { receive = data => args[4]({ data: JSON.stringify(data) }); return ({
                 pc: { addEventListener() {}, getSenders: () => [], close() {} }, dc,
                 localStream: { getTracks: () => [] },
+                microphone: { hold() {}, release() {}, close() {} },
             }) } },
             "@/app/contexts/TranscriptContext": { useTranscript: () => ({ addTranscriptBreadcrumb() {} }) },
             "@/app/contexts/EventContext": { useEvent: () => ({ logClientEvent: (event) => { if (event.stage === "data_channel_open") channelReady = true }, logServerEvent() {} }) },
@@ -569,6 +583,12 @@ function voiceTransferFixture() {
     const timers = new Map()
     let timerId = 0
     const directTrack = { stop: () => { events.push("stop direct microphone") } }
+    const microphone = {
+        holding: false,
+        hold() { this.holding = true },
+        release(discard) { this.holding = false; events.push(discard ? "discard held voice" : "release held voice") },
+        close() { events.push("close direct microphone gate") },
+    }
     const gatewayTrack = { stop: () => { events.push("stop gateway microphone") } }
     const directStream = { getTracks: () => [directTrack], getAudioTracks: () => [directTrack] }
     const gatewayStream = { getTracks: () => [gatewayTrack], getAudioTracks: () => [gatewayTrack] }
@@ -622,6 +642,7 @@ function voiceTransferFixture() {
                         close() {},
                     },
                     localStream: directStream,
+                    microphone,
                 }
             } },
             "@/app/contexts/TranscriptContext": {
@@ -669,7 +690,7 @@ function voiceTransferFixture() {
     }
 
     return {
-        props, events, directMessages, gatewayMessages, breadcrumbs, render, untilConnected, connect,
+        props, events, directMessages, gatewayMessages, breadcrumbs, render, untilConnected, connect, microphone,
         switchAgent: (...args) => serverHandler.switchVoiceAgent(...args),
         defer: (...args) => serverHandler.deferAgentTransfer(...args),
         direct: (message) => receiveDirect(message),
@@ -720,6 +741,27 @@ test("an OpenAI transfer waits for the matching output buffer to drain", async (
     fixture.render().configure()
     await fixture.untilConnected()
     assert.ok(fixture.events.indexOf("close direct") < fixture.events.indexOf("open gateway"))
+})
+
+test("WebRTC holds the caller's microphone during generation and releases it only after matching playback", async () => {
+    const fixture = voiceTransferFixture()
+    await fixture.connect()
+    const { direct, directMessages, microphone } = fixture
+    assert.equal(microphone.holding, true)
+    direct({ type: "response.created", response: { id: "outgoing" } })
+    direct({ type: "response.done", response: { id: "outgoing", status: "completed", output: [
+        { type: "message", role: "assistant", content: [{ type: "output_audio" }] },
+    ] } })
+    assert.equal(microphone.holding, true)
+    direct({ type: "output_audio_buffer.started", response_id: "outgoing" })
+    direct({ type: "output_audio_buffer.stopped", response_id: "previous" })
+    assert.equal(microphone.holding, true)
+    direct({ type: "output_audio_buffer.stopped", response_id: "outgoing" })
+    assert.equal(microphone.holding, false)
+    direct({ type: "input_audio_buffer.speech_started", item_id: "caller" })
+    direct({ type: "input_audio_buffer.committed", item_id: "caller" })
+    assert.equal(directMessages.filter(({ type }) => type === "response.create").length, 2)
+    assert.equal(microphone.holding, true)
 })
 
 test("OpenAI hands-free speech is accepted while the previous reply plays", async (t) => {

@@ -1,6 +1,7 @@
 /* global require */
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const { Buffer } = require("node:buffer")
 const { setImmediate: waitForReplay } = require("node:timers/promises")
 const load = require("./helpers/load-typescript.cjs")
 
@@ -13,6 +14,8 @@ function gatewayFixture() {
     let closes = 0
     let errors = 0
     let stops = 0
+    let pendingAudioSends = 0
+    let peakPendingAudioSends = 0
     const playbackChanges = []
     class SdkSession {
         constructor(options) {
@@ -27,7 +30,10 @@ function gatewayFixture() {
         sendEvent(event) {
             const serialized = this.options.model.serializeClientEvent(event)
             if (serialized != null) sent.push(serialized)
-            return Promise.resolve()
+            if (serialized?.type !== "input-audio-append") return Promise.resolve()
+            pendingAudioSends++
+            peakPendingAudioSends = Math.max(peakPendingAudioSends, pendingAudioSends)
+            return Promise.resolve().then(() => { pendingAudioSends-- })
         }
         stopPlayback() { stops++ }
         async resumePlayback() {}
@@ -68,6 +74,7 @@ function gatewayFixture() {
         status: (status) => session.setState("status", status),
         receive: (event) => session.options.onEvent(event),
         capture: (audio) => session.sendEvent({ type: "input-audio-append", audio }),
+        peakPendingAudioSends: () => peakPendingAudioSends,
         playback: (isPlaying) => {
             session.state.isPlaying = isPlaying
             session.setState("isPlaying", isPlaying)
@@ -244,20 +251,46 @@ test("Gateway discards held audio on explicit interruption or disconnect", async
     assert.deepEqual(audioFrames(sent), ["fresh-input"])
 })
 
+test("Gateway retains early microphone input through 64 seconds of reply and submits replay sequentially", async () => {
+    for (const samplesPerFrame of [1024, 512]) {
+        const { sent, status, receive, capture, playback, peakPendingAudioSends } = gatewayFixture()
+        status("connected")
+        receive({ type: "response-created", responseId: "long-reply" })
+        playback(true)
+        const pcm = Buffer.alloc(samplesPerFrame * 2)
+        const frames = Array.from({ length: 64 * 24_000 / samplesPerFrame }, (_, sequence) => {
+            pcm.writeUInt16LE(sequence)
+            return pcm.toString("base64")
+        })
+        for (const frame of frames) capture(frame)
+
+        receive({ type: "response-done", responseId: "long-reply", status: "completed" })
+        await waitForReplay()
+        assert.deepEqual(audioFrames(sent), [])
+
+        playback(false)
+        await waitForReplay()
+        const replayed = audioFrames(sent)
+        assert.equal(replayed.length, frames.length)
+        assert.ok(replayed.every((frame, sequence) => frame === frames[sequence]))
+        assert.equal(peakPendingAudioSends(), 1)
+    }
+})
+
 test("Gateway bounds the number and byte size of retained audio frames", async () => {
     const { sent, status, capture, playback } = gatewayFixture()
     status("connected")
     playback(true)
-    for (let i = 0; i < 520; i++) capture(String(i))
+    for (let i = 0; i < 3_272; i++) capture(String(i))
     playback(false)
     await waitForReplay()
-    assert.deepEqual(audioFrames(sent), Array.from({ length: 448 }, (_, i) => String(i + 72)))
+    assert.deepEqual(audioFrames(sent), Array.from({ length: 3_200 }, (_, i) => String(i + 72)))
 
     sent.length = 0
     playback(true)
     const frame = "AAAA".repeat(1250)
-    for (let i = 0; i < 251; i++) capture(frame)
+    for (let i = 0; i < 901; i++) capture(frame)
     playback(false)
     await waitForReplay()
-    assert.equal(audioFrames(sent).length, 250)
+    assert.equal(audioFrames(sent).length, 900)
 })

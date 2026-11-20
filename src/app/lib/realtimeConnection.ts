@@ -1,6 +1,7 @@
 import { RefObject } from "react"
 import { recordRealtimeFetch } from "./client-telemetry"
 import * as semconv from "./semconv"
+import { createWebRtcMicrophoneGate, type WebRtcMicrophoneGate } from "./webrtcMicrophoneGate"
 
 export type RealtimeConnectionStage =
     | "session_requested"
@@ -20,7 +21,8 @@ export async function createRealtimeConnection(
     onMessage: (event: MessageEvent) => void,
     onRemoteStream: (stream: MediaStream) => void,
     onStage: (stage: RealtimeConnectionStage) => void,
-): Promise<{ pc: RTCPeerConnection; dc: RTCDataChannel; localStream: MediaStream }> {
+    onBufferedSpeech?: () => void,
+): Promise<{ pc: RTCPeerConnection; dc: RTCDataChannel; localStream: MediaStream; microphone: WebRtcMicrophoneGate }> {
     // Start a transaction for the entire connection process
     const transaction = window.elasticApm?.startTransaction("gen_ai.realtime.connection", "webrtc");
     if (transaction) {
@@ -32,7 +34,9 @@ export async function createRealtimeConnection(
 
     let pc: RTCPeerConnection | null = null;
     let ms: MediaStream | null = null;
+    let microphone: WebRtcMicrophoneGate | undefined;
     const cleanup = () => {
+        microphone?.close();
         ms?.getTracks().forEach((track) => track.stop());
         pc?.close();
     };
@@ -68,12 +72,14 @@ export async function createRealtimeConnection(
         onStage("requesting_microphone");
         ms = await navigator.mediaDevices.getUserMedia({ audio: true });
         signal.throwIfAborted();
+        microphone = await createWebRtcMicrophoneGate(ms, signal, onBufferedSpeech);
+        signal.throwIfAborted();
         onStage("microphone_received");
         mediaSpan?.end();
 
         // Add local track with span
         const addTrackSpan = transaction?.startSpan("gen_ai.realtime.add_track", "webrtc");
-        pc.addTrack(ms.getTracks()[0]);
+        pc.addTrack(microphone.track);
         addTrackSpan?.end();
 
         // Create data channel with span
@@ -175,7 +181,7 @@ export async function createRealtimeConnection(
         // Transaction successful - end it
         transaction?.end();
 
-        return { pc, dc, localStream: ms };
+        return { pc, dc, localStream: ms, microphone };
     } catch (error) {
         cleanup();
         // Record error in transaction

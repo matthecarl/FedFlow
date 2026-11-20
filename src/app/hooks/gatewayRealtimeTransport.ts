@@ -12,8 +12,10 @@ type FunctionCall = { type: "function_call"; call_id: string; name: string; argu
 type AssistantMessage = { type: "message"; role: "assistant"; id: string; content: [{ type: "output_audio"; transcript: string }] }
 type InputAudio = Extract<Experimental_RealtimeClientEvent, { type: "input-audio-append" }>
 
-const MAX_HELD_AUDIO_FRAMES = 448
-const MAX_HELD_AUDIO_BYTES = 1_250_000
+// About 70 seconds of 24 kHz mono PCM in base64. Allow smaller frames when
+// the SDK resamples a higher capture rate. Only one replay write is in flight.
+const MAX_HELD_AUDIO_FRAMES = 3_200
+const MAX_HELD_AUDIO_BYTES = 4_500_000
 const AUDIO_REPLAY_INTERVAL_MS = 16
 const RESPONSE_START_WINDOW_MS = 8_000
 
