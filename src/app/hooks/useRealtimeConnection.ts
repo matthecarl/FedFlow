@@ -2,7 +2,7 @@ import { useRef, useState, useEffect } from "react"
 import { v4 as uuidv4 } from "uuid"
 import { ServerEvent, SessionStatus, UseRealtimeConnectionProps, VoiceHandoffContext } from "@/app/types"
 import { createRealtimeConnection, RealtimeConnectionStage } from "@/app/lib/realtimeConnection"
-import type { WebRtcMicrophoneGate } from "@/app/lib/webrtcMicrophoneGate"
+import type { WebRtcMicrophoneGate, WebRtcPlaybackWatch } from "@/app/lib/webrtcMicrophoneGate"
 import { useTranscript } from "@/app/contexts/TranscriptContext"
 import { useEvent } from "@/app/contexts/EventContext"
 import { useHandleServerEvent } from "./useHandleServerEvent"
@@ -45,6 +45,7 @@ export function useRealtimeConnection({
         ended: new Map<string, "stopped" | "cleared">(),
         deadlines: new Map<string, ReturnType<typeof setTimeout>>(),
         generating: null as { eventId: string; responseId?: string } | null,
+        browserWatch: null as { responseId: string; watch: WebRtcPlaybackWatch } | null,
     })
     const directMicrophoneRef = useRef<WebRtcMicrophoneGate | null>(null)
     const pendingSwitchRef = useRef<DeferredVoiceSwitch | null>(null)
@@ -176,7 +177,12 @@ export function useRealtimeConnection({
 
     function rememberDirectPlaybackEnd(responseId: string, end: "stopped" | "cleared") {
         if (!responseId) return
-        const { ended, deadlines } = directPlaybackRef.current
+        const direct = directPlaybackRef.current
+        const { ended, deadlines } = direct
+        if (direct.browserWatch?.responseId === responseId) {
+            direct.browserWatch.watch.stop()
+            direct.browserWatch = null
+        }
         const deadline = deadlines.get(responseId)
         if (deadline !== undefined) {
             clearTimeout(deadline)
@@ -185,6 +191,24 @@ export function useRealtimeConnection({
         if (ended.has(responseId)) return
         ended.set(responseId, end)
         if (ended.size > 32) ended.delete(ended.keys().next().value!)
+    }
+
+    function watchDirectPlayback(responseId: string) {
+        const direct = directPlaybackRef.current
+        if (!responseId || direct.browserWatch?.responseId === responseId) return
+        direct.browserWatch?.watch.stop()
+        const watch = directMicrophoneRef.current?.watchPlayback?.(() => {
+            if (direct.browserWatch?.responseId !== responseId || !direct.deadlines.has(responseId) ||
+                direct.active.size !== 1 || !direct.active.has(responseId) || !channelIsOpen()) return
+            direct.active.delete(responseId)
+            rememberDirectPlaybackEnd(responseId, "stopped")
+            logClientEvent({ type: "audio.playback_drained_locally", responseId })
+            finishVoiceSwitchIfDrained()
+            releaseDirectMicrophoneIfDrained()
+            responseCoordinatorRef.current?.flush()
+        })
+        direct.browserWatch = watch ? { responseId, watch } : null
+        if (direct.deadlines.has(responseId)) watch?.generationCompleted()
     }
 
     function trackCompletedDirectReply(response?: ServerEvent["response"]) {
@@ -205,6 +229,7 @@ export function useRealtimeConnection({
             releaseDirectMicrophoneIfDrained()
             responseCoordinatorRef.current?.flush()
         }, VOICE_DRAIN_TIMEOUT_MS))
+        if (direct.browserWatch?.responseId === responseId) direct.browserWatch.watch.generationCompleted()
     }
 
     function releaseDirectMicrophoneIfDrained() {
@@ -213,7 +238,9 @@ export function useRealtimeConnection({
     }
 
     function resetDirectPlayback() {
-        const { active, ended, deadlines } = directPlaybackRef.current
+        const { active, ended, deadlines, browserWatch } = directPlaybackRef.current
+        browserWatch?.watch.stop()
+        directPlaybackRef.current.browserWatch = null
         deadlines.forEach((deadline) => clearTimeout(deadline))
         deadlines.clear()
         active.clear()
@@ -361,7 +388,10 @@ export function useRealtimeConnection({
                 const responseSupersededByVoice = responseCoordinatorRef.current?.receive(message)
                 const audioId = typeof message.response_id === "string" ? message.response_id : ""
                 if (message.type === "output_audio_buffer.started") {
-                    if (!direct.ended.has(audioId)) direct.active.add(audioId)
+                    if (!direct.ended.has(audioId)) {
+                        direct.active.add(audioId)
+                        watchDirectPlayback(audioId)
+                    }
                 } else if (message.type === "output_audio_buffer.stopped" || message.type === "output_audio_buffer.cleared") {
                     const wasPlaying = direct.active.delete(audioId)
                     const cleared = message.type === "output_audio_buffer.cleared"

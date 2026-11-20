@@ -425,7 +425,7 @@ test("typed input waits for greeting cancellation acknowledgement before creatin
             "@/app/lib/realtimeConnection": { createRealtimeConnection: async (...args) => { receive = data => args[4]({ data: JSON.stringify(data) }); return ({
                 pc: { addEventListener() {}, getSenders: () => [], close() {} }, dc,
                 localStream: { getTracks: () => [] },
-                microphone: { hold() {}, release() {}, close() {} },
+                microphone: { hold() {}, release() {}, close() {}, watchPlayback() { return { generationCompleted() {}, stop() {} } } },
             }) } },
             "@/app/contexts/TranscriptContext": { useTranscript: () => ({ addTranscriptBreadcrumb() {} }) },
             "@/app/contexts/EventContext": { useEvent: () => ({ logClientEvent: (event) => { if (event.stage === "data_channel_open") channelReady = true }, logServerEvent() {} }) },
@@ -585,9 +585,19 @@ function voiceTransferFixture() {
     const directTrack = { stop: () => { events.push("stop direct microphone") } }
     const microphone = {
         holding: false,
+        playback: [],
         hold() { this.holding = true },
         release(discard) { this.holding = false; events.push(discard ? "discard held voice" : "release held voice") },
         close() { events.push("close direct microphone gate") },
+        watchPlayback(onDrained) {
+            const playback = {
+                completed: false, stopped: false, onDrained,
+                generationCompleted() { this.completed = true },
+                stop() { this.stopped = true },
+            }
+            this.playback.push(playback)
+            return playback
+        },
     }
     const gatewayTrack = { stop: () => { events.push("stop gateway microphone") } }
     const directStream = { getTracks: () => [directTrack], getAudioTracks: () => [directTrack] }
@@ -758,10 +768,30 @@ test("WebRTC holds the caller's microphone during generation and releases it onl
     assert.equal(microphone.holding, true)
     direct({ type: "output_audio_buffer.stopped", response_id: "outgoing" })
     assert.equal(microphone.holding, false)
+    assert.equal(microphone.playback[0].stopped, true)
     direct({ type: "input_audio_buffer.speech_started", item_id: "caller" })
     direct({ type: "input_audio_buffer.committed", item_id: "caller" })
     assert.equal(directMessages.filter(({ type }) => type === "response.create").length, 2)
     assert.equal(microphone.holding, true)
+})
+
+test("observed WebRTC playback drain releases the microphone when the provider omits its stop event", async () => {
+    const fixture = voiceTransferFixture()
+    await fixture.connect()
+    const { direct, microphone } = fixture
+    direct({ type: "response.created", response: { id: "outgoing" } })
+    direct({ type: "output_audio_buffer.started", response_id: "outgoing" })
+    const playback = microphone.playback[0]
+    assert.equal(playback.completed, false)
+    direct({ type: "response.done", response: { id: "outgoing", status: "completed", output: [
+        { type: "message", role: "assistant", content: [{ type: "output_audio" }] },
+    ] } })
+    assert.equal(playback.completed, true)
+    assert.equal(microphone.holding, true)
+    playback.onDrained()
+    assert.equal(playback.stopped, true)
+    assert.equal(microphone.holding, false)
+    assert.ok(!fixture.directMessages.some(({ type }) => type === "output_audio_buffer.clear" || type === "response.cancel"))
 })
 
 test("OpenAI hands-free speech is accepted while the previous reply plays", async (t) => {

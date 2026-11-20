@@ -50,6 +50,7 @@ export async function createRealtimeConnection(
 
         // Set up track handler
         pc.ontrack = (e) => {
+            if (e.streams[0]) microphone?.setRemotePlaybackStream(e.streams[0]);
             onRemoteStream(e.streams[0]);
             if (audioElement.current) {
                 audioElement.current.srcObject = e.streams[0];
